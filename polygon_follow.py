@@ -1,0 +1,78 @@
+"""Read-only Polygon V2 exchange fill follower. No real trading."""
+import json,urllib.request,os,time,sqlite3
+RPC=os.getenv("POLYGON_RPC","https://polygon-bor-rpc.publicnode.com")
+WALLET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc".lower()
+EXCHANGES=["0xE111180000d2663C0091e4f400237545B87B996B","0xe2222d279d744050d28e00520010520000310F59"]
+def rpc(method,params):
+ data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+ with urllib.request.urlopen(urllib.request.Request(RPC,data=data,headers={"Content-Type":"application/json"}),timeout=18) as r:out=json.load(r)
+ if out.get("error"):raise RuntimeError(str(out["error"])[:180])
+ return out["result"]
+def scan(c,limit=500):
+ c.execute("CREATE TABLE IF NOT EXISTS polygon_cursor(id INTEGER PRIMARY KEY,block INTEGER)")
+ latest=int(rpc("eth_blockNumber",[]),16)
+ row=c.execute("SELECT block FROM polygon_cursor WHERE id=1").fetchone()
+ start=(row[0]+1) if row else max(0,latest-2000)
+ end=min(latest-8,start+limit-1)
+ if end<start:return [],{"latest":latest,"cursor":start-1,"events":0}
+ topic="0x"+("0"*24)+WALLET[2:]
+ events=[]
+ for contract in EXCHANGES:
+  for slot in (1,2):
+   topics=[None,None,None]
+   topics[slot]=topic
+   logs=rpc("eth_getLogs",[{"address":contract,"fromBlock":hex(start),"toBlock":hex(end),"topics":topics}])
+   for log in logs:
+    ts=log.get("topics") or []
+    # V2 OrderFilled has orderHash, maker, taker indexed and 8 non-indexed words.
+    if len(ts)!=4 or len(log.get("data","")[2:])!=8*64:continue
+    words=[int(log["data"][2+i*64:2+(i+1)*64],16) for i in range(8)]
+    side,token,maker_amt,taker_amt,fee=words[:5]
+    if side not in (0,1) or token==0 or maker_amt<=0 or taker_amt<=0:continue
+    # Only maker's own fills: the taker topic can be an exchange router.
+    if ts[2].lower()!=topic:continue
+    # V2: BUY maker spends collateral; SELL maker spends outcome shares.
+    collateral=(maker_amt if side==0 else taker_amt)/1e6
+    shares=(taker_amt if side==0 else maker_amt)/1e6
+    if not (collateral>0 and shares>0):continue
+    price=collateral/shares
+    if not 0<price<1:continue
+    events.append({"key":log["transactionHash"]+":"+hex(int(log["logIndex"],16)),"block":int(log["blockNumber"],16),"asset":str(token),"side":"BUY" if side==0 else "SELL","price":price,"notional":collateral,"shares":shares})
+ events.sort(key=lambda x:(x["block"],x["key"]))
+ c.execute("INSERT INTO polygon_cursor(id,block) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET block=excluded.block",(end,))
+ return events,{"latest":latest,"cursor":end,"events":len(events)}
+def execute(path,fx):
+ now=int(time.time())
+ with sqlite3.connect(path,timeout=20) as c:
+  events,meta=scan(c)
+  cash,_,started=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
+  count=0
+  for ev in events:
+   if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(ev["key"],)).fetchone():continue
+   asset=ev["asset"];market="Polygon V2 token "+asset[:20]
+   pos=c.execute("SELECT shares,cost,last_price FROM copy_positions WHERE asset=?",(asset,)).fetchone()
+   px=ev["price"]
+   # Fixed 5% of observed source fill, capped at 10% initial paper bankroll.
+   amount=min(cash,50.0,ev["notional"]*.05/fx)
+   if ev["side"]=="BUY":
+    if amount<1:continue
+    fill=min(.99,px+.02);qty=amount*fx/(fill+.01)
+    if pos:
+     c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]+qty,pos[1]+amount,fill,asset))
+    else:c.execute("INSERT INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,qty,amount,fill))
+    cash-=amount
+   else:
+    if not pos:continue
+    # Proportional sale; never sell more shares than owned.
+    qty=min(pos[0],ev["shares"]*.05)
+    if qty<=0:continue
+    fill=max(.001,px-.02)
+    amount=max(0,qty*max(.001,fill-.01)/fx)
+    cash+=amount
+    if pos[0]-qty<1e-8:c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
+    else:c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]-qty,pos[1]*(1-qty/pos[0]),fill,asset))
+   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,"Verified Polygon V2 maker fill; 5% source notional paper sizing"))
+   count+=1
+  c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,"Polygon V2 blocks scanned through "+str(meta["cursor"])+"; "+str(count)+" new paper orders"))
+ return {"status":"monitoring","copied":count,"polygon":meta,"cash_eur":round(cash,2)}
