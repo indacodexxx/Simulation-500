@@ -6,8 +6,7 @@ from pathlib import Path
 PORT=int(os.getenv("PORT","10000")); DB=os.getenv("DB_PATH","/tmp/simulation500.sqlite")
 ASSETS={"BTC-EUR":("crypto","BTCEUR","EUR"),"ETH-EUR":("crypto","ETHEUR","EUR"),"SOL-EUR":("crypto","SOLEUR","EUR"),"SPY":("etf","SPY","USD"),"QQQ":("etf","QQQ","USD"),"DIA":("etf","DIA","USD"),"IWM":("etf","IWM","USD"),"EWQ":("etf","EWQ","USD"),"EWG":("etf","EWG","USD"),"EWJ":("etf","EWJ","USD"),"GLD":("etf","GLD","USD"),"SLV":("etf","SLV","USD"),"TLT":("etf","TLT","USD"),"AAPL":("stock","AAPL","USD"),"MSFT":("stock","MSFT","USD"),"NVDA":("stock","NVDA","USD"),"TSLA":("stock","TSLA","USD"),"ASML":("stock","ASML","USD"),"MC.PA":("stock","MC.PA","EUR"),"AIR.PA":("stock","AIR.PA","EUR"),"CAC40":("index","^FCHI","EUR"),"SP500":("index","^GSPC","USD"),"NASDAQ100":("index","^NDX","USD"),"DAX":("index","^GDAXI","EUR"),"NIKKEI":("index","^N225","JPY"),"HANGSENG":("index","^HSI","HKD"),"FTSE":("index","^FTSE","GBP"),"VIX":("index","^VIX","USD"),"EURUSD":("fx","EURUSD=X","USD")}
 def fee_rate(asset):
- # Mode simulation sans frais, demande explicite de l'utilisateur.
- return 0.0
+ return realistic_cost_rate(asset)["commission"]
 
 def realistic_cost_rate(asset):
  # Hypotheses pedagogiques, pas des tarifs garantis ni des prix bid/ask reels.
@@ -193,7 +192,7 @@ def scan():
    if px is None:continue
    change=px/p["entry"]-1
    fee=fee_rate(a)
-   target=max(.018,2*fee+.014)
+   target=.035
    if change>=target or change<=-.012:
     fee=fee_rate(a)
     proceeds=p["qty"]*px*(1-fee);cash+=proceeds
@@ -207,11 +206,11 @@ def scan():
    if px is None:continue
    ind=history.get(a)
    if ind is None:continue
-   trend=.002<ind["momentum"]<.04 and 38<=ind["rsi"]<=70 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0
+   trend=.008<ind["momentum"]<.035 and 48<=ind["rsi"]<=65 and ind["macd_pct"]>.03 and ind["sma20_gap_pct"]>.1 and ind["volatility_2h_pct"]<3
    reversal=any(p in ind["patterns"] for p in ("bullish_engulfing","hammer")) and 28<=ind["rsi"]<=65 and ind["momentum"]>-.025 and ind["sma20_gap_pct"]>-.8
    candle_continuation="three_green" in ind["patterns"] and 38<=ind["rsi"]<=72 and ind["momentum"]>0
    ind["entry_setup"]="trend" if trend else ("reversal" if reversal else ("three_green" if candle_continuation else "none"))
-   if trend or reversal or candle_continuation:
+   if trend:
     last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
     if last and now-last<120:
      audit(c,now,"BLOCK",a,"Signal détecté, mais cooldown de 2 minutes")
@@ -227,10 +226,10 @@ def scan():
   else:
    ranked=sorted(candidates,key=lambda x:(x[3]["entry_setup"]=="trend",x[0]),reverse=True)
    for mom,a,px,ind in ranked:
-    if len(pos)>=10 or cash<20:break
-    amount=min(cash*.35,max(25,equity*.18))
+    if len(pos)>=3 or cash<20:break
+    amount=min(cash*.25,max(25,equity*.15))
     fee=fee_rate(a)
-    if amount*(.012+2*fee)>5:amount=5/(.012+2*fee)
+    if amount*(.012+2*fee)>equity*.005:amount=equity*.005/(.012+2*fee)
     if amount<12:continue
     audit(c,now,"SIGNAL",a,f"Signal technique accepté sans contrôle IA; setup={ind['entry_setup']}; patterns={ind['patterns']}")
     qty=amount*(1-fee)/px
