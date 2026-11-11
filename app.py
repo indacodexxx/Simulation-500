@@ -1,4 +1,4 @@
-import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math
+import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -119,7 +119,7 @@ def scan():
    return None
   pos={r["asset"]:dict(r) for r in c.execute("SELECT * FROM positions")}
   day=datetime.fromtimestamp(now,timezone.utc).strftime("%Y-%m-%d")
-  c.execute("INSERT OR IGNORE INTO daily_risk VALUES(?,?)",(day,cash+sum(p["cost"] for p in pos)))
+  c.execute("INSERT OR IGNORE INTO daily_risk VALUES(?,?)",(day,cash+sum(p["cost"] for p in pos.values())))
   day_start=c.execute("SELECT start_equity FROM daily_risk WHERE day=?",(day,)).fetchone()[0]
   c.execute("DELETE FROM daily_risk WHERE day<?",(day,))
   for a,p in list(pos.items()):
@@ -223,7 +223,7 @@ def worker():
   try:scan()
   except Exception as e:
    with db() as c:
-    audit(c,int(time.time()),"ERROR","ENGINE","Erreur moteur: "+str(e)[:200])
+    audit(c,int(time.time()),"ERROR","ENGINE","Erreur moteur: "+traceback.format_exc()[-650:])
     c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
   time.sleep(30)
 if __name__=="__main__":
