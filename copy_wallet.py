@@ -6,7 +6,6 @@ import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 LOCK=threading.Lock()
 POLYGON_RPC="https://polygon-bor-rpc.publicnode.com"
-CTF="0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
 def polygon_rpc(method,params):
  body=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
  req=urllib.request.Request(POLYGON_RPC,data=body,headers={"Content-Type":"application/json","User-Agent":"Simulation500/1.0"})
@@ -16,9 +15,6 @@ def polygon_rpc(method,params):
 def polygon_probe():
  """Read-only Polygon ERC-1155 transfer probe. Not equivalent to filled trades."""
  latest=int(polygon_rpc("eth_blockNumber",[]),16)
- # ERC1155 TransferSingle(address,address,address,uint256,uint256)
- topic="0xc3d58168c5bfaa3c6d2e3b3f1d7e6c6a5b5a9d1e5b2c7b5a6a6d8e3f4e2c8e0"
- # Use TransferSingle signature topic computed with Ethereum keccak, never a guessed hash.
  return {"block":latest,"rpc":POLYGON_RPC,"wallet":TARGET,"note":"RPC connectivity only; transfers require verified event topics and token mapping"}
 
 def fetch(url):
