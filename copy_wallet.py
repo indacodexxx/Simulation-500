@@ -39,7 +39,7 @@ def run(path):
   denominator=target_exposure_value()
   fx=usd_per_eur()
  except Exception as e:
-  with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",("Sizing unavailable: "+str(e))[:250],)
+  with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(e))[:250],))
   return {"error":"Sizing unavailable: "+str(e)[:180]}
  # Target's public open-position value excludes unknown cash balance.
  # Paper ledger is USD internally; 500 EUR starting capital converted to USD.
@@ -51,7 +51,7 @@ def run(path):
   valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and e.get("asset")]
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
-   c.execute("UPDATE copy_state SET started=?,last_seen=?,error=NULL WHERE id=1",(now,max(latest,now-30),))
+   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-30)))
    return {"status":"initialized","recent_public_trades":len(valid),"latest_public_trade":latest}
   # No trades older than 90 seconds, no retroactive backfills, and duplicate-safe.
   new=sorted((e for e in valid if int(e["timestamp"])>last_seen and now-int(e["timestamp"])<=90),key=lambda e:int(e["timestamp"]))
