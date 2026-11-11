@@ -89,13 +89,17 @@ def run(path):
  try:
   positions=open_positions()
   fx=usd_per_eur()
-  events=activity(5)
-  latest_event=max((int(x.get("block_timestamp") or x.get("timestamp") or 0) for x in events),default=0)
  except Exception as exc:
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Snapshot error: "+str(exc)[:150]))
   return {"error":str(exc)[:180]}
+ try:
+  events=activity(5)
+  latest_event=max((int(x.get("block_timestamp") or x.get("timestamp") or 0) for x in events),default=0)
+ except Exception:
+  events=[]
+  latest_event=0
  # Limit exposure to the top five current public positions. No source cash visibility.
  selected=sorted(positions,key=lambda x:x[4],reverse=True)[:5]
  total=sum(x[4] for x in positions)
