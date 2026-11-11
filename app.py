@@ -21,6 +21,25 @@ def quote(asset,kind,symbol):
   return float(next(iter(d["result"].values()))["c"][0]),int(time.time()),"Kraken"
  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=1d")["chart"]["result"][0]["meta"]
  return float(d["regularMarketPrice"]),int(d["regularMarketTime"]),"Yahoo Finance"
+def historical_momentum(asset,kind,symbol,now):
+ # Use actual historical candles, not a one-hour warm-up or invented prices.
+ if kind=="crypto":
+  pair={"BTC-EUR":"XXBTZEUR","ETH-EUR":"XETHZEUR","SOL-EUR":"SOLEUR"}[asset]
+  d=get("https://api.kraken.com/0/public/OHLC?pair="+pair+"&interval=5")
+  if d.get("error"):raise ValueError(str(d["error"]))
+  candles=next(v for k,v in d["result"].items() if k!="last")
+  points=[(int(x[0]),float(x[4])) for x in candles if int(x[0])<=now-300]
+ else:
+  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=2d")["chart"]["result"][0]
+  timestamps=d.get("timestamp") or []
+  closes=d["indicators"]["quote"][0]["close"]
+  points=[(int(t),float(p)) for t,p in zip(timestamps,closes) if p is not None and math.isfinite(float(p))]
+ if len(points)<8:return None
+ latest_t,latest=points[-1]
+ if now-latest_t>600:return None
+ earlier=[(t,p) for t,p in points if now-7800<=t<=now-6000]
+ if not earlier:return None
+ return latest/earlier[0][1]-1
 def scan():
  now=int(time.time());errors=[];fresh={}
  for a,(kind,symbol,cur) in ASSETS.items():
@@ -58,10 +77,10 @@ def scan():
    if kind not in ("crypto","etf","stock") or a in pos:continue
    px=eur(a)
    if px is None:continue
-   rows=c.execute("SELECT t,price FROM samples WHERE asset=? AND t>=? ORDER BY t",(a,now-7200)).fetchall()
-   if len(rows)<8 or rows[-1]["t"]-rows[0]["t"]<3600:continue
-   momentum=rows[-1]["price"]/rows[0]["price"]-1
-   if .004<momentum<.04:candidates.append((momentum,a,px))
+   try:momentum=historical_momentum(a,kind,ASSETS[a][1],now)
+   except Exception as e:
+    errors.append(a+" history: "+str(e)[:40]);continue
+   if momentum is not None and .004<momentum<.04:candidates.append((momentum,a,px))
   if len(pos)<3 and cash>=80 and candidates:
    mom,a,px=max(candidates);amount=min(100,cash*.25);fee=.004 if ASSETS[a][0]=="crypto" else .001
    qty=amount*(1-fee)/px;cash-=amount
