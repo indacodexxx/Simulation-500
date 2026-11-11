@@ -311,6 +311,7 @@ class Handler(BaseHTTPRequestHandler):
   elif self.path.split("?")[0]=="/api/state":body=json.dumps(snapshot()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/research":body=json.dumps(research_snapshot()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/microstructure":body=json.dumps(microstructure.snapshot()).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/microstructure/report":body=json.dumps(microstructure.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
@@ -322,5 +323,14 @@ def worker():
     audit(c,int(time.time()),"ERROR","ENGINE","Erreur moteur: "+traceback.format_exc()[-650:])
     c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
   time.sleep(15)
+def book_worker():
+ while True:
+  try:microstructure.collect(DB)
+  except Exception as exc:
+   with db() as c:audit(c,int(time.time()),"ERROR","MICROSTRUCTURE",str(exc)[:180])
+  time.sleep(60)
 if __name__=="__main__":
- init();threading.Thread(target=worker,daemon=True).start();ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
+ init();microstructure.init(DB)
+ threading.Thread(target=worker,daemon=True).start()
+ threading.Thread(target=book_worker,daemon=True).start()
+ ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
