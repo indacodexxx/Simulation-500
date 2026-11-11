@@ -88,10 +88,12 @@ def snapshot():
   return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Sur Render gratuit, veille et stockage ephemere: pas de garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
+ def do_HEAD(self):
+  self.send_response(200);self.send_header("Content-Type","text/html");self.end_headers()
  def do_GET(self):
-  if self.path in ("/","/index.html"):body=HTML;mime="text/html; charset=utf-8"
-  elif self.path=="/api/state":body=json.dumps(snapshot()).encode();mime="application/json"
-  elif self.path=="/health":body=b'{"ok":true}';mime="application/json"
+  if self.path.split("?")[0] in ("/","/index.html"):body=HTML;mime="text/html; charset=utf-8"
+  elif self.path.split("?")[0]=="/api/state":body=json.dumps(snapshot()).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
 def worker():
