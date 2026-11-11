@@ -12,6 +12,7 @@ def init():
   c.executescript("CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY,cash REAL,last_run INTEGER,error TEXT);CREATE TABLE IF NOT EXISTS quotes(asset TEXT PRIMARY KEY,price REAL,t INTEGER,source TEXT);CREATE TABLE IF NOT EXISTS samples(t INTEGER,asset TEXT,price REAL,PRIMARY KEY(t,asset));CREATE TABLE IF NOT EXISTS positions(asset TEXT PRIMARY KEY,qty REAL,entry REAL,cost REAL);CREATE TABLE IF NOT EXISTS trades(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,asset TEXT,side TEXT,price REAL,amount REAL,pnl REAL,reason TEXT);")
   c.execute("INSERT OR IGNORE INTO state VALUES(1,500,0,'En attente du premier scan')")
   c.execute("CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,asset TEXT,indicators TEXT,decision TEXT,reason TEXT)")
+  c.execute("CREATE TABLE IF NOT EXISTS daily_risk(day TEXT PRIMARY KEY,start_equity REAL)")
 def get(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
  with urllib.request.urlopen(req,timeout=8) as r:return json.load(r)
@@ -57,7 +58,7 @@ def ai_approve(asset,indicators,price):
  key=os.getenv("OPENAI_API_KEY","")
  if not key:return False,"OPENAI_API_KEY absente"
  model=os.getenv("OPENAI_MODEL","gpt-4.1-mini")
- payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":2,"take_profit_pct":3.5,"paper_trading":True})}],"max_output_tokens":70}
+ payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":1.2,"paper_trading":True})}],"max_output_tokens":70}
  req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
  try:
   with urllib.request.urlopen(req,timeout=18) as r:result=json.load(r)
@@ -94,14 +95,20 @@ def scan():
    if cur=="USD" and fx and now-fx[1]<600 and fx[0]>0:return q[0]/fx[0]
    return None
   pos={r["asset"]:dict(r) for r in c.execute("SELECT * FROM positions")}
+  day=datetime.fromtimestamp(now,timezone.utc).strftime("%Y-%m-%d")
+  c.execute("INSERT OR IGNORE INTO daily_risk VALUES(?,?)",(day,cash+sum(p["cost"] for p in pos)))
+  day_start=c.execute("SELECT start_equity FROM daily_risk WHERE day=?",(day,)).fetchone()[0]
+  c.execute("DELETE FROM daily_risk WHERE day<?",(day,))
   for a,p in list(pos.items()):
    px=eur(a)
    if px is None:continue
    change=px/p["entry"]-1
-   if change>=.035 or change<=-.02:
+   fee=.004 if ASSETS[a][0]=="crypto" else .001
+   target=max(.012,2*fee+.006)
+   if change>=target or change<=-.012:
     fee=.004 if ASSETS[a][0]=="crypto" else .001
     proceeds=p["qty"]*px*(1-fee);cash+=proceeds
-    c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"SELL",px,proceeds,proceeds-p["cost"],"Take profit" if change>=.035 else "Stop loss"))
+    c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"SELL",px,proceeds,proceeds-p["cost"],"Micro take profit" if change>=target else "Micro stop loss"))
     c.execute("DELETE FROM positions WHERE asset=?",(a,));del pos[a]
   candidates=[]
   for a,(kind,_,_) in ASSETS.items():
@@ -112,10 +119,17 @@ def scan():
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
    if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0:candidates.append((ind["momentum"],a,px,ind))
-  if len(pos)<3 and cash>=80 and candidates:
-   mom,a,px,ind=max(candidates);amount=min(100,cash*.25);fee=.004 if ASSETS[a][0]=="crypto" else .001
+  equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
+  daily_loss_limit=max(0,day_start*.03)
+  recent_trades=c.execute("SELECT COUNT(*) FROM trades WHERE side='BUY' AND t>?",(now-3600,)).fetchone()[0]
+  if len(pos)<3 and cash>=30 and candidates and equity>day_start-daily_loss_limit and recent_trades<12:
+   mom,a,px,ind=max(candidates);amount=min(75,cash*.30);fee=.004 if ASSETS[a][0]=="crypto" else .001
+   last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
+   if last and now-last<300:
+    c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"Cooldown 5 min "+a))
+    return
    # 2% stop + round-trip fees must not exceed 1% of initial 500 EUR.
-   if amount*(.02+2*fee)>5:amount=5/(.02+2*fee)
+   if amount*(.012+2*fee)>5:amount=5/(.012+2*fee)
    approved,decision=ai_approve(a,ind,px)
    c.execute("INSERT INTO decisions(t,asset,indicators,decision,reason) VALUES(?,?,?,?,?)",(now,a,json.dumps(ind),"APPROVE" if approved else "REJECT",decision))
    c.execute("DELETE FROM decisions WHERE id NOT IN (SELECT id FROM decisions ORDER BY id DESC LIMIT 100)")
@@ -144,7 +158,7 @@ def snapshot():
   decisions=[dict(x) for x in c.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT 20")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 60 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"cost-aware micro trading; max 12 buys/hour; 5 min asset cooldown; 3% daily circuit breaker","cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
@@ -160,6 +174,6 @@ def worker():
   try:scan()
   except Exception as e:
    with db() as c:c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
-  time.sleep(60)
+  time.sleep(30)
 if __name__=="__main__":
  init();threading.Thread(target=worker,daemon=True).start();ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
