@@ -35,9 +35,9 @@ def open_positions():
  for p in rows:
   if not isinstance(p,dict):continue
   asset=p.get("token_id") or p.get("asset") or p.get("tokenId")
-  shares=float(p.get("size") or 0)
-  price=float(p.get("curPrice") or p.get("current_price") or p.get("price") or 0)
-  value=float(p.get("currentValue") or p.get("current_value") or shares*price)
+  shares=float(p.get("current_size") or p.get("size") or 0)
+  price=float(p.get("current_price") or p.get("curPrice") or p.get("price") or 0)
+  value=float(p.get("current_value") or p.get("currentValue") or shares*price)
   if asset and shares>0 and 0.02<=price<=0.98 and value>0:
    positions.append((str(asset),str(p.get("title") or p.get("slug") or p.get("conditionId") or ""),shares,price,value))
  return positions
@@ -98,8 +98,8 @@ def run(path):
   state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
   cash,last_seen,started=state
   if not started:cash=500
-  valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and (e.get("token_id") or e.get("asset"))]
-  latest=max([int(e["timestamp"]) for e in valid],default=0)
+  valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and (e.get("block_timestamp") or e.get("timestamp")) and (e.get("token_id") or e.get("asset"))]
+  latest=max([int(e.get("block_timestamp") or e.get("timestamp")) for e in valid],default=0)
   if not started:
    c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=0,copied=0,reason=? WHERE id=1",(now,len(valid),latest,"First poll: historical trades excluded"))
    c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-600)))
