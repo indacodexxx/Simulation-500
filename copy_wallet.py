@@ -135,6 +135,15 @@ def diagnostics():
  try:
   activity=fetch("https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":1,"type":"TRADE"}))
   out["activity_v2"]={"ok":isinstance(activity,list) or (isinstance(activity,dict) and isinstance(activity.get("data"),list)),"latest_count":len(activity.get("data",[])) if isinstance(activity,dict) else (len(activity) if isinstance(activity,list) else 0)}
+  rows=activity.get("data",[]) if isinstance(activity,dict) else (activity if isinstance(activity,list) else [])
+  if rows:
+   a=rows[0]
+   out["activity_v2"]["latest_timestamp"]=a.get("timestamp")
+   out["activity_v2"]["latest_side"]=a.get("side")
+   out["activity_v2"]["latest_asset_present"]=bool(a.get("asset") or a.get("token_id") or a.get("tokenId"))
+   out["activity_v2"]["latest_tx_present"]=bool(a.get("transactionHash") or a.get("transaction_hash"))
+   out["activity_v2"]["latest_price"]=a.get("price")
+   out["activity_v2"]["latest_size"]=a.get("size")
  except Exception as exc:
   out["activity_v2"]={"ok":False,"error":str(exc)[:450]}
  try:
