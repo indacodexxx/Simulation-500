@@ -89,6 +89,8 @@ def run(path):
  try:
   positions=open_positions()
   fx=usd_per_eur()
+  events=activity(5)
+  latest_event=max((int(x.get("block_timestamp") or x.get("timestamp") or 0) for x in events),default=0)
  except Exception as exc:
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
@@ -127,9 +129,9 @@ def run(path):
    c.execute("INSERT OR IGNORE INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
     ("snapshot:buy:"+asset+":"+str(now),now,market,asset,"BUY",price,entry,shares,allocation,"Public source position detected; proportional paper allocation"))
    copied+=1
-  c.execute("UPDATE copy_state SET cash=?,error=NULL WHERE id=1",(cash,))
+  c.execute("UPDATE copy_state SET cash=?,last_seen=?,error=NULL WHERE id=1",(cash,latest_event))
   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",
-   (now,len(positions),0,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "No OPEN positions returned by Polymarket v2; no paper trades created" if not positions else "Snapshot checked; no change in top five positions"))
+   (now,len(events),latest_event,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "No OPEN positions; "+str(len(events))+" recent public activity events; latest timestamp "+str(latest_event)+"; no paper orders invented" if not positions else "Snapshot checked; no change in top five positions"))
  return {"status":"monitoring","copied":copied,"source_open_positions":len(positions),"cash_eur":round(cash,2)}
 def report(path):
  with LOCK,sqlite3.connect(path,timeout=15) as c:
@@ -141,6 +143,6 @@ def report(path):
  return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"public open-position snapshot: each new top-five position allocated 500 EUR * position_value / all_open_positions_value","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
- "last_target_trade":None,"started":started,"error":error,"execution_enabled":False,
+ "last_target_trade":last_seen or None,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
  "warning":"Reconciles public top-five open positions, not individual source fills. Position changes within already-held tokens are not copied. Source cash unknown. Initial snapshot allocation mirrors top five public positions only, excludes unknown source cash and is not exact portfolio copy. Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
