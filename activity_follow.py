@@ -1,5 +1,5 @@
 """Public Polymarket V2 activity follower; no trading credentials or real orders."""
-import time,sqlite3,urllib.parse
+import time,sqlite3,urllib.parse,os
 import polygon_follow
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 def scan(c):
@@ -10,7 +10,8 @@ def scan(c):
  # One-time, explicitly labeled 24-hour historical paper backfill; deduplicated by trade_key.
  c.execute("CREATE TABLE IF NOT EXISTS activity_backfill(id INTEGER PRIMARY KEY CHECK(id=1),completed INTEGER NOT NULL)")
  backfilled=c.execute("SELECT completed FROM activity_backfill WHERE id=1").fetchone()
- historical=not backfilled
+ historical=not backfilled and os.getenv('COPY_HISTORICAL_BACKFILL','0')=='1'
+ # Default to live-only on fresh/ephemeral databases: do not replay yesterday's trades on deploy.
  start=max(1,now-86400) if historical else (row[0] if row else now)
  if not row:
   c.execute("INSERT INTO activity_cursor VALUES(1,?)",(now,))
@@ -58,7 +59,9 @@ def execute(path):
   fx=usd_per_eur()
  else:fx=None
  result=polygon_follow.execute(path,fx=fx,preloaded=(events,meta))
- if meta["historical"]:
-  with sqlite3.connect(path,timeout=20) as c:
+ with sqlite3.connect(path,timeout=20) as c:
+  if meta["historical"]:
    c.execute("INSERT OR REPLACE INTO activity_backfill VALUES(1,1)")
+  # Advance only after successful processing; overlap five seconds for late fills.
+  c.execute("UPDATE activity_cursor SET started_at=? WHERE id=1",(max(meta["cursor"],int(time.time())-5),))
  return result
