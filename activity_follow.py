@@ -34,23 +34,28 @@ def scan(c):
  else:
   raise RuntimeError("Wallet activity exceeded 50 pages; refusing to silently miss trades")
  events=[]
+ filtered={'before_cursor':0,'invalid_fields':0,'invalid_timestamp':0}
  for a in rows:
   try:
    timestamp=int(a.get("timestamp") or 0)
-   if timestamp<start:continue
+   if timestamp<start:
+    filtered['before_cursor']+=1
+    continue
    side=str(a.get("side") or "").upper()
    token=str(a.get("token_id") or a.get("tokenId") or a.get("asset") or "")
    price=float(a.get("price") or 0)
    shares=float(a.get("size") or 0)
    notional=float(a.get("usdc_size") or a.get("usdcSize") or shares*price)
    tx=str(a.get("transaction_hash") or a.get("transactionHash") or "")
-   if side not in ("BUY","SELL") or not token or not tx or not 0<price<1 or shares<=0 or notional<=0:continue
+   if side not in ("BUY","SELL") or not token or not tx or not 0<price<1 or shares<=0 or notional<=0:
+    filtered["invalid_fields"]+=1
+    continue
    # Stable per-fill fingerprint; identical fills inside same tx are aggregated by design.
    key="v2:"+tx+":"+token+":"+side+":"+str(timestamp)+":"+str(shares)+":"+str(notional)
    events.append({"key":key,"block":timestamp,"asset":token,"side":side,"price":price,"notional":notional,"shares":shares})
-  except (ValueError,TypeError):continue
+  except (ValueError,TypeError):filtered['invalid_timestamp']+=1
  events.sort(key=lambda e:(e["block"],e["key"]))
- return events,{"latest":max((e["block"] for e in events),default=0),"cursor":start,"events":len(events),"source":"Polymarket V2 historical backfill (24h)" if historical else "Polymarket V2 live activity","historical":historical}
+ return events,{"latest":max((e["block"] for e in events),default=0),"cursor":start,"events":len(events),"raw_events":len(rows),"filtered":filtered,"source":"Polymarket V2 historical backfill (24h)" if historical else "Polymarket V2 live activity","historical":historical}
 def execute(path):
  with sqlite3.connect(path,timeout=20) as c:
   events,meta=scan(c)
