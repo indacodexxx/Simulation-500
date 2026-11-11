@@ -48,8 +48,8 @@ def run(path):
   if not started:
    c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-30)))
    return {"status":"initialized","recent_public_trades":len(valid),"latest_public_trade":latest}
-  # No trades older than 90 seconds, no retroactive backfills, and duplicate-safe.
-  new=sorted((e for e in valid if int(e["timestamp"])>last_seen and now-int(e["timestamp"])<=90),key=lambda e:int(e["timestamp"]))
+  # Overlap 5 minutes to handle delayed indexing; deduplicate by stable trade key.
+  new=sorted((e for e in valid if int(e["timestamp"])>=max(started,last_seen-300) and now-int(e["timestamp"])<=600),key=lambda e:int(e["timestamp"]))
   copied=0
   if new:
    try:
