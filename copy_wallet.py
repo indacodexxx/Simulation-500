@@ -39,9 +39,18 @@ def target_exposure_value():
  if value<=0:raise ValueError("Target open-position value is zero; cannot size proportional trades")
  return value
 def usd_per_eur():
- d=fetch("https://api.kraken.com/0/public/Ticker?pair=EURUSD")
- if d.get("error"):raise ValueError(str(d["error"]))
- return float(next(iter(d["result"].values()))["c"][0])
+ """Use independent EUR/USD feeds; never guess an exchange rate."""
+ failures=[]
+ for name,url,parser in [
+  ("Frankfurter","https://api.frankfurter.dev/v1/latest?base=EUR&symbols=USD",lambda d:float(d["rates"]["USD"])),
+  ("ExchangeRate API","https://open.er-api.com/v6/latest/EUR",lambda d:float(d["rates"]["USD"])),
+  ("Kraken","https://api.kraken.com/0/public/Ticker?pair=EURUSD",lambda d:float(next(iter(d["result"].values()))["c"][0]))]:
+  try:
+   rate=parser(fetch(url))
+   if 0.5<rate<2.0:return rate
+   raise ValueError("Out of range")
+  except Exception as exc:failures.append(name+": "+str(exc)[:80])
+ raise RuntimeError("No EUR/USD provider available: "+" | ".join(failures))
 def open_positions():
  """Fetch public open positions; reject unknown response shapes rather than inventing positions."""
  url="https://data-api.polymarket.com/v2/positions?"+urllib.parse.urlencode({"user":TARGET,"limit":500,"status":"OPEN"})
@@ -103,7 +112,7 @@ def run(path):
   try:
    return polygon_follow.execute(path,fx)
   except Exception as chain_exc:
-   raise RuntimeError("Polygon RPC "+polygon_follow.RPC+": "+str(chain_exc)) from chain_exc
+   raise RuntimeError("Polygon scanner: "+str(chain_exc)) from chain_exc
  except Exception as exc:
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
