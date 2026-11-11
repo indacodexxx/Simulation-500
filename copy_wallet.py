@@ -118,6 +118,19 @@ def run(path):
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polygon follower error: "+str(exc)[:180]))
   return {"error":str(exc)[:180]}
+def diagnostics():
+ """Independent upstream checks, safe for read-only API health endpoint."""
+ out={"target":TARGET,"checked_at":int(time.time()),"paper_only":True}
+ try:
+  out["eur_usd"]={"ok":True,"rate":usd_per_eur()}
+ except Exception as exc:
+  out["eur_usd"]={"ok":False,"error":str(exc)[:450]}
+ try:
+  block=int(polygon_follow.rpc("eth_blockNumber",[]),16)
+  out["polygon"]={"ok":True,"latest_block":block,"rpc_fallbacks":len(polygon_follow.RPC_URLS)}
+ except Exception as exc:
+  out["polygon"]={"ok":False,"error":str(exc)[:450]}
+ return out
 def report(path):
  with LOCK,sqlite3.connect(path,timeout=15) as c:
   state=c.execute("SELECT cash,last_seen,started,error FROM copy_state WHERE id=1").fetchone()
