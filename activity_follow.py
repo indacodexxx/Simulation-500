@@ -14,11 +14,18 @@ def scan(c):
  start=max(1,now-86400) if historical else (row[0] if row else now)
  if not row:
   c.execute("INSERT INTO activity_cursor VALUES(1,?)",(now,))
- url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC","start":max(1,start-5)})
- payload=fetch(url)
- rows=payload.get("data") if isinstance(payload,dict) else payload
- if not isinstance(rows,list):
-  raise ValueError("Unexpected Polymarket V2 activity response")
+ rows=[]
+ # Fetch all recent fills, not just the first 200. Never silently truncate busy wallets.
+ for offset in range(0,2000,200):
+  url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":200,"offset":offset,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"})
+  payload=fetch(url)
+  page=payload.get("data") if isinstance(payload,dict) else payload
+  if not isinstance(page,list):raise ValueError("Unexpected Polymarket V2 activity response")
+  rows.extend(page)
+  if len(page)<200:break
+  if min((int(a.get("timestamp") or 0) for a in page if isinstance(a,dict)),default=0)<start:break
+ else:
+  raise RuntimeError("Wallet activity exceeded 2000 fills; refusing to silently miss trades")
  events=[]
  for a in rows:
   try:
@@ -36,8 +43,6 @@ def scan(c):
    events.append({"key":key,"block":timestamp,"asset":token,"side":side,"price":price,"notional":notional,"shares":shares})
   except (ValueError,TypeError):continue
  events.sort(key=lambda e:(e["block"],e["key"]))
- if historical:
-  c.execute("INSERT OR REPLACE INTO activity_backfill VALUES(1,1)")
  return events,{"latest":max((e["block"] for e in events),default=0),"cursor":start,"events":len(events),"source":"Polymarket V2 historical backfill (24h)" if historical else "Polymarket V2 live activity","historical":historical}
 def execute(path):
  with sqlite3.connect(path,timeout=20) as c:
@@ -46,4 +51,8 @@ def execute(path):
   from copy_wallet import usd_per_eur
   fx=usd_per_eur()
  else:fx=None
- return polygon_follow.execute(path,fx=fx,preloaded=(events,meta))
+ result=polygon_follow.execute(path,fx=fx,preloaded=(events,meta))
+ if meta["historical"]:
+  with sqlite3.connect(path,timeout=20) as c:
+   c.execute("INSERT OR REPLACE INTO activity_backfill VALUES(1,1)")
+ return result
