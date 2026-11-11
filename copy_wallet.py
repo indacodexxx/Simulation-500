@@ -134,7 +134,7 @@ def diagnostics():
  out={"target":TARGET,"checked_at":int(time.time()),"paper_only":True}
  try:
   activity=fetch("https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":1,"type":"TRADE"}))
-  out["activity_v2"]={"ok":isinstance(activity,dict) and isinstance(activity.get("data"),list),"latest_count":len(activity.get("data",[])) if isinstance(activity,dict) else 0}
+  out["activity_v2"]={"ok":isinstance(activity,list) or (isinstance(activity,dict) and isinstance(activity.get("data"),list)),"latest_count":len(activity.get("data",[])) if isinstance(activity,dict) else (len(activity) if isinstance(activity,list) else 0)}
  except Exception as exc:
   out["activity_v2"]={"ok":False,"error":str(exc)[:450]}
  try:
