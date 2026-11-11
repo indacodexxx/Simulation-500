@@ -7,10 +7,13 @@ def scan(c):
  c.execute("CREATE TABLE IF NOT EXISTS activity_cursor(id INTEGER PRIMARY KEY CHECK(id=1),started_at INTEGER NOT NULL)")
  now=int(time.time())
  row=c.execute("SELECT started_at FROM activity_cursor WHERE id=1").fetchone()
- # Only follow new trades, never silently replay stale fills as current trades.
- start=row[0] if row else now
+ # One-time, explicitly labeled 24-hour historical paper backfill; deduplicated by trade_key.
+ c.execute("CREATE TABLE IF NOT EXISTS activity_backfill(id INTEGER PRIMARY KEY CHECK(id=1),completed INTEGER NOT NULL)")
+ backfilled=c.execute("SELECT completed FROM activity_backfill WHERE id=1").fetchone()
+ historical=not backfilled
+ start=max(1,now-86400) if historical else (row[0] if row else now)
  if not row:
-  c.execute("INSERT INTO activity_cursor VALUES(1,?)",(start,))
+  c.execute("INSERT INTO activity_cursor VALUES(1,?)",(now,))
  url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC","start":max(1,start-5)})
  payload=fetch(url)
  rows=payload.get("data") if isinstance(payload,dict) else payload
@@ -33,7 +36,9 @@ def scan(c):
    events.append({"key":key,"block":timestamp,"asset":token,"side":side,"price":price,"notional":notional,"shares":shares})
   except (ValueError,TypeError):continue
  events.sort(key=lambda e:(e["block"],e["key"]))
- return events,{"latest":now,"cursor":start,"events":len(events),"source":"Polymarket V2 activity"}
+ if historical:
+  c.execute("INSERT OR REPLACE INTO activity_backfill VALUES(1,1)")
+ return events,{"latest":max((e["block"] for e in events),default=0),"cursor":start,"events":len(events),"source":"Polymarket V2 historical backfill (24h)" if historical else "Polymarket V2 live activity","historical":historical}
 def execute(path):
  with sqlite3.connect(path,timeout=20) as c:
   events,meta=scan(c)
