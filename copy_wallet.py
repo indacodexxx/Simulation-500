@@ -133,6 +133,11 @@ def diagnostics():
  """Independent upstream checks, safe for read-only API health endpoint."""
  out={"target":TARGET,"checked_at":int(time.time()),"paper_only":True}
  try:
+  activity=fetch("https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":1,"type":"TRADE"}))
+  out["activity_v2"]={"ok":isinstance(activity,dict) and isinstance(activity.get("data"),list),"latest_count":len(activity.get("data",[])) if isinstance(activity,dict) else 0}
+ except Exception as exc:
+  out["activity_v2"]={"ok":False,"error":str(exc)[:450]}
+ try:
   out["eur_usd"]={"ok":True,"rate":usd_per_eur()}
  except Exception as exc:
   out["eur_usd"]={"ok":False,"error":str(exc)[:450]}
@@ -149,9 +154,9 @@ def report(path):
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
   health=c.execute("SELECT checked,events,latest,candidates,copied,reason FROM copy_health WHERE id=1").fetchone()
  cash,last_seen,started,error=state
- return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"Polygon V2 maker OrderFilled: 5% of observed fill notional, capped at 50 EUR per order; simulated spread and fee","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
+ return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"Polymarket V2 wallet activity: 5% of observed fill notional, capped at 50 EUR per order; simulated spread and fee","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
  "last_target_trade":last_seen or None,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
- "warning":"Polygon V2 on-chain maker fills only. Wallet must be the exchange maker; proxy or routed taker fills may be missed. 5% of source trade notional, not exact portfolio mirroring. No historical backfill beyond initial 2000 blocks. EUR/USD from Kraken; paper slippage and fees approximate. Render SQLite storage is ephemeral."}
+ "warning":"Public Polymarket V2 wallet activity feed; newly observed trades only. 5% of source trade notional, not exact portfolio mirroring. FX, paper slippage and fees approximate. Render SQLite storage is ephemeral; not ready for real-money trading."}
