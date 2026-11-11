@@ -78,82 +78,54 @@ def init(path):
 def run(path):
  now=int(time.time())
  with LOCK,sqlite3.connect(path,timeout=15) as c:
-  started=c.execute("SELECT started FROM copy_state WHERE id=1").fetchone()[0]
- if not started:
-  try:return bootstrap(path,now)
-  except Exception as exc:
-   with LOCK,sqlite3.connect(path,timeout=15) as c:
-    c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Bootstrap unavailable: "+str(exc))[:250],))
-    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Bootstrap unavailable: "+str(exc)[:150]))
-   return {"error":"Bootstrap unavailable: "+str(exc)[:180]}
- try:events=activity(100)
- except Exception as e:
-  with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(e)[:250],))
-  return {"error":str(e)[:250]}
-
- # Target's public open-position value excludes unknown cash balance.
- # Paper ledger is EUR; USD contract prices converted at time of simulated order.
-
+  cash,last_seen,started=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
+ # Public positions are the authoritative desired portfolio. Reconcile the snapshot
+ # instead of relying on the first 100 activity records (which can omit fast trades).
+ try:
+  positions=open_positions()
+  fx=usd_per_eur()
+ except Exception as exc:
+  with LOCK,sqlite3.connect(path,timeout=15) as c:
+   c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
+   c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Snapshot error: "+str(exc)[:150]))
+  return {"error":str(exc)[:180]}
+ # Limit exposure to the top five current public positions. No source cash visibility.
+ selected=sorted(positions,key=lambda x:x[4],reverse=True)[:5]
+ total=sum(x[4] for x in positions)
+ desired={p[0]:p for p in selected}
+ copied=0
  with LOCK,sqlite3.connect(path,timeout=15) as c:
-  state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
-  cash,last_seen,started=state
-  if not started:cash=500
-  valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and (e.get("block_timestamp") or e.get("timestamp")) and (e.get("token_id") or e.get("asset"))]
-  latest=max([int(e.get("block_timestamp") or e.get("timestamp")) for e in valid],default=0)
   if not started:
-   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=0,copied=0,reason=? WHERE id=1",(now,len(valid),latest,"First poll: historical trades excluded"))
-   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-600)))
-   return {"status":"initialized","recent_public_trades":len(valid),"latest_public_trade":latest}
-  # Overlap 10 minutes for delayed indexing; deduplicate by stable trade key.
-  new=sorted((e for e in valid if int(e["timestamp"])>=max(started-600,last_seen-600) and now-int(e["timestamp"])<=900),key=lambda e:int(e["timestamp"]))
-  copied=0
-  if new:
-   try:
-    denominator=target_exposure_value()
-    fx=usd_per_eur()
-   except Exception as exc:
-    c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=0,reason=? WHERE id=1",(now,len(valid),latest,len(new),"Sizing API error: "+str(exc)[:150]))
-    c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(exc))[:250],))
-    return {"error":"Sizing unavailable: "+str(exc)[:180]}
-  for e in new:
-   side=str(e["side"]).upper();asset=str(e.get("token_id") or e.get("asset"));t=int(e["timestamp"]);market=str(e.get("title") or e.get("slug") or e.get("condition_id") or e.get("conditionId") or "")
-   price=float(e.get("price") or 0);target_size=float(e.get("size") or 0)
-   if not 0.02<=price<=0.98 or target_size<=0:continue
-   key=":".join(str(v) for v in (e.get("transaction_hash") or e.get("transactionHash") or "",asset,side,t,price,target_size))
-   if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(key,)).fetchone():continue
-   p=c.execute("SELECT shares,cost,last_price FROM copy_positions WHERE asset=?",(asset,)).fetchone()
-   if side=="BUY":
-    if c.execute("SELECT COUNT(*) FROM copy_positions").fetchone()[0]>=5 and not p:continue
-    # Assumed 2 cent price disadvantage + 1 cent execution cost per share, not observed fill.
-    simulated_price=min(.99,price+.02)
-    target_notional=target_size*price
-    target_weight=target_notional/denominator
-    paper_equity=cash+sum(x[1] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
-    amount=min(cash,max(0,paper_equity*target_weight))
-    if amount<1:continue
-    shares=amount*fx/(simulated_price+.01)
-    cash-=amount
-    old_shares,old_cost=(p[0],p[1]) if p else (0,0)
-    c.execute("INSERT OR REPLACE INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,old_shares+shares,old_cost+amount,simulated_price))
-    reason="Paper copy: target BUY; 2c adverse price and 1c cost/share assumed"
-   else:
-    if not p:continue
-    simulated_price=max(.001,price-.02)
-    target_weight=(target_size*price)/denominator
-    paper_equity=cash+sum(x[0]*x[2] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
-    shares=min(p[0],max(0,paper_equity*target_weight)*fx/max(.001,p[2]))
-    amount=max(0,shares*(simulated_price-.01)/fx)
-    cash+=amount
-    left=p[0]-shares
-    if left<1e-7:c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
-    else:c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(left,p[1]*left/p[0],simulated_price,asset))
-    reason="Paper copy: target SELL; 2c adverse price and 1c cost/share assumed"
-   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
-    (key,t,market,asset,side,price,simulated_price,shares,amount,reason))
+   cash=500.
+   c.execute("UPDATE copy_state SET started=?,cash=?,last_seen=? WHERE id=1",(now,cash,now))
+  existing={x[0]:x for x in c.execute("SELECT asset,market,shares,cost,last_price FROM copy_positions")}
+  # Sell disappeared positions first, releasing cash for new entries.
+  for asset,p in existing.items():
+   if asset in desired:continue
+   shares=p[2];price=max(.001,p[4]-.02)
+   proceeds=max(0.,shares*(price-.01)/fx)
+   cash+=proceeds
+   c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
+   c.execute("INSERT OR IGNORE INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+    ("snapshot:sell:"+asset+":"+str(now),now,p[1],asset,"SELL",p[4],price,shares,proceeds,"Public source position absent from latest snapshot; simulated exit"))
    copied+=1
-  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,len(valid),latest,len(new),copied,"Trades copied" if copied else ("Candidates filtered or duplicate" if new else "No new public trades in polling window")))
-  c.execute("UPDATE copy_state SET cash=?,last_seen=?,error=NULL WHERE id=1",(cash,max(last_seen,latest)))
- return {"status":"running","copied":copied,"latest_public_trade":latest}
+  # Existing positions are held; buy only new positions. Avoid repeated buys
+  # solely because market prices changed.
+  for asset,market,source_shares,price,value in selected:
+   if asset in existing:continue
+   allocation=min(cash,500.*value/total) if total>0 else 0.
+   if allocation<1:continue
+   entry=min(.99,price+.02)
+   shares=allocation*fx/(entry+.01)
+   cash-=allocation
+   c.execute("INSERT INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,shares,allocation,entry))
+   c.execute("INSERT OR IGNORE INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+    ("snapshot:buy:"+asset+":"+str(now),now,market,asset,"BUY",price,entry,shares,allocation,"Public source position detected; proportional paper allocation"))
+   copied+=1
+  c.execute("UPDATE copy_state SET cash=?,last_seen=?,error=NULL WHERE id=1",(cash,now))
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",
+   (now,len(positions),now,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "Snapshot checked; no change in top five positions"))
+ return {"status":"monitoring","copied":copied,"source_open_positions":len(positions),"cash_eur":round(cash,2)}
 def report(path):
  with LOCK,sqlite3.connect(path,timeout=15) as c:
   state=c.execute("SELECT cash,last_seen,started,error FROM copy_state WHERE id=1").fetchone()
@@ -161,9 +133,9 @@ def report(path):
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
   health=c.execute("SELECT checked,events,latest,candidates,copied,reason FROM copy_health WHERE id=1").fetchone()
  cash,last_seen,started,error=state
- return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"target_trade_usd / target_open_positions_value_usd (proxy, excludes unknown cash)","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
+ return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"public open-position snapshot: each new top-five position allocated 500 EUR * position_value / all_open_positions_value","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
  "last_target_trade":last_seen,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
- "warning":"Initial snapshot allocation mirrors top five public positions only, excludes unknown source cash and is not exact portfolio copy. Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
+ "warning":"Reconciles public top-five open positions, not individual source fills. Position changes within already-held tokens are not copied. Source cash unknown. Initial snapshot allocation mirrors top five public positions only, excludes unknown source cash and is not exact portfolio copy. Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
