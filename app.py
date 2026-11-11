@@ -16,6 +16,10 @@ def init():
   c.execute("INSERT OR IGNORE INTO state VALUES(1,500,0,'En attente du premier scan')")
   c.execute("CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,asset TEXT,indicators TEXT,decision TEXT,reason TEXT)")
   c.execute("CREATE TABLE IF NOT EXISTS daily_risk(day TEXT PRIMARY KEY,start_equity REAL)")
+  c.execute("CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,category TEXT,asset TEXT,detail TEXT)")
+def audit(c,t,category,asset,detail):
+ c.execute("INSERT INTO audit(t,category,asset,detail) VALUES(?,?,?,?)",(t,category,asset,str(detail)[:700]))
+ c.execute("DELETE FROM audit WHERE id NOT IN (SELECT id FROM audit ORDER BY id DESC LIMIT 500)")
 def get(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
  with urllib.request.urlopen(req,timeout=8) as r:return json.load(r)
@@ -89,6 +93,7 @@ def scan():
    if now-t<600:c.execute("INSERT OR REPLACE INTO samples VALUES(?,?,?)",(now,a,p))
   c.execute("DELETE FROM samples WHERE t<?",(now-86400,))
   s=c.execute("SELECT * FROM state WHERE id=1").fetchone();cash=s["cash"]
+  audit(c,now,"SCAN","",f"{len(fresh)}/{len(ASSETS)} cotations reçues, {len(errors)} erreurs de collecte")
   fx=fresh.get("EURUSD")
   def eur(a):
    q=fresh.get(a)
@@ -112,6 +117,7 @@ def scan():
     fee=.004 if ASSETS[a][0]=="crypto" else .001
     proceeds=p["qty"]*px*(1-fee);cash+=proceeds
     c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"SELL",px,proceeds,proceeds-p["cost"],"Micro take profit" if change>=target else "Micro stop loss"))
+    audit(c,now,"SELL",a,f"Sortie simulée: prix EUR={px:.6f}, frais={fee*100:.2f}% par côté, P&L net={proceeds-p['cost']:.4f} EUR")
     c.execute("DELETE FROM positions WHERE asset=?",(a,));del pos[a]
   candidates=[]
   for a,(kind,_,_) in ASSETS.items():
@@ -122,6 +128,7 @@ def scan():
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
    if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0 and (max(.018,2*fee_rate(a)+.014)-2*fee_rate(a))/(.012+2*fee_rate(a))>=.5:candidates.append((ind["momentum"],a,px,ind))
+  audit(c,now,"SIGNALS","",f"{len(candidates)} signaux éligibles; "+", ".join(a for _,a,_,_ in candidates[:8]))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
   daily_loss_limit=max(0,day_start*.03)
   recent_trades=c.execute("SELECT COUNT(*) FROM trades WHERE side='BUY' AND t>?",(now-3600,)).fetchone()[0]
@@ -129,6 +136,7 @@ def scan():
    mom,a,px,ind=max(candidates);amount=min(75,cash*.30);fee=.004 if ASSETS[a][0]=="crypto" else .001
    last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
    if last and now-last<300:
+    audit(c,now,"BLOCK",a,"Délai minimum de 5 minutes depuis le dernier achat")
     c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"Cooldown 5 min "+a))
     return
    # 2% stop + round-trip fees must not exceed 1% of initial 500 EUR.
@@ -136,12 +144,17 @@ def scan():
    approved,decision=ai_approve(a,ind,px)
    c.execute("INSERT INTO decisions(t,asset,indicators,decision,reason) VALUES(?,?,?,?,?)",(now,a,json.dumps(ind),"APPROVE" if approved else "REJECT",decision))
    c.execute("DELETE FROM decisions WHERE id NOT IN (SELECT id FROM decisions ORDER BY id DESC LIMIT 100)")
+   audit(c,now,"AI",a,f"{decision}; indicateurs={json.dumps(ind)}")
    if not approved:
     errors.append("AI veto "+a+": "+decision)
     amount=0
    qty=amount*(1-fee)/px;cash-=amount
-   if amount>0:c.execute("INSERT INTO positions VALUES(?,?,?,?)",(a,qty,px,amount))
+   if amount>0:
+    audit(c,now,"BUY",a,f"Achat simulé {amount:.2f} EUR, quantité={qty:.8f}, prix={px:.6f} EUR, frais={fee*100:.2f}%")
+    c.execute("INSERT INTO positions VALUES(?,?,?,?)",(a,qty,px,amount))
    if amount>0:c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"BUY",px,amount,0,"AI approved; Momentum 2h: "+str(round(mom*100,2))+"%"))
+  if errors:audit(c,now,"ERROR","", "; ".join(errors[:3]))
+  if equity<=day_start-daily_loss_limit:audit(c,now,"BLOCK","","Coupe-circuit de perte journalière actif")
   c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"; ".join(errors[:6]) if errors else None))
 def snapshot():
  now=int(time.time())
@@ -159,9 +172,10 @@ def snapshot():
   pos=[dict(x) for x in c.execute("SELECT * FROM positions")]
   trades=[dict(x) for x in c.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 100")]
   decisions=[dict(x) for x in c.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT 20")]
+  audit_events=[dict(x) for x in c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; conservative taker-fee model; max 12 buys/hour; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; conservative taker-fee model; max 12 buys/hour; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
@@ -176,7 +190,9 @@ def worker():
  while True:
   try:scan()
   except Exception as e:
-   with db() as c:c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
+   with db() as c:
+    audit(c,int(time.time()),"ERROR","ENGINE","Erreur moteur: "+str(e)[:200])
+    c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
   time.sleep(30)
 if __name__=="__main__":
  init();threading.Thread(target=worker,daemon=True).start();ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
