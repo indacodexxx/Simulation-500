@@ -5,8 +5,9 @@ from pathlib import Path
 PORT=int(os.getenv("PORT","10000")); DB=os.getenv("DB_PATH","/tmp/simulation500.sqlite")
 ASSETS={"BTC-EUR":("crypto","BTCEUR","EUR"),"ETH-EUR":("crypto","ETHEUR","EUR"),"SOL-EUR":("crypto","SOLEUR","EUR"),"SPY":("etf","SPY","USD"),"QQQ":("etf","QQQ","USD"),"DIA":("etf","DIA","USD"),"IWM":("etf","IWM","USD"),"EWQ":("etf","EWQ","USD"),"EWG":("etf","EWG","USD"),"EWJ":("etf","EWJ","USD"),"GLD":("etf","GLD","USD"),"SLV":("etf","SLV","USD"),"TLT":("etf","TLT","USD"),"AAPL":("stock","AAPL","USD"),"MSFT":("stock","MSFT","USD"),"NVDA":("stock","NVDA","USD"),"TSLA":("stock","TSLA","USD"),"ASML":("stock","ASML","USD"),"MC.PA":("stock","MC.PA","EUR"),"AIR.PA":("stock","AIR.PA","EUR"),"CAC40":("index","^FCHI","EUR"),"SP500":("index","^GSPC","USD"),"NASDAQ100":("index","^NDX","USD"),"DAX":("index","^GDAXI","EUR"),"NIKKEI":("index","^N225","JPY"),"HANGSENG":("index","^HSI","HKD"),"FTSE":("index","^FTSE","GBP"),"VIX":("index","^VIX","USD"),"EURUSD":("fx","EURUSD=X","USD")}
 def fee_rate(asset):
- # Conservative simulated taker fee, configurable; never a claim of actual exchange execution.
- return float(os.getenv("CRYPTO_TAKER_FEE","0.008")) if ASSETS[asset][0]=="crypto" else float(os.getenv("EQUITY_SIM_FEE","0.001"))
+ # Mode simulation sans frais, demande explicite de l'utilisateur.
+ return 0.0
+
 def db():
  c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;return c
 def init():
@@ -215,7 +216,7 @@ def snapshot():
   audit_events=[dict(x) for x in c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; conservative taker-fee model; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; zero simulated transaction fees; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement, sans frais de transaction simules. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
