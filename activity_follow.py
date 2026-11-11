@@ -19,7 +19,7 @@ def scan(c):
  # Polymarket V2 pagination uses next_cursor, never offset.
  cursor=None
  for page_number in range(50):
-  params={"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"}
+  params={"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC","start":start}
   if cursor:params["cursor"]=cursor
   payload=fetch("https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode(params))
   page=payload.get("data") if isinstance(payload,dict) else payload
@@ -27,8 +27,12 @@ def scan(c):
   rows.extend(page)
   if not page:break
   if min((int(a.get("timestamp") or 0) for a in page if isinstance(a,dict)),default=0)<start:break
-  next_cursor=payload.get("next_cursor") if isinstance(payload,dict) else None
-  if not next_cursor:break
+  pagination=payload.get("pagination") or {} if isinstance(payload,dict) else {}
+  next_cursor=pagination.get("next_cursor") if isinstance(pagination,dict) else None
+  if not next_cursor:
+   if isinstance(pagination,dict) and pagination.get("has_more"):
+    raise RuntimeError("Polymarket reports more pages without next_cursor; refusing incomplete scan")
+   break
   if next_cursor==cursor:raise RuntimeError("Polymarket activity cursor did not advance")
   cursor=next_cursor
  else:
