@@ -2,7 +2,7 @@
 Trades are copied from the public Data API with a 500 EUR independent ledger.
 No keys, wallets, on-chain transactions or real orders.
 """
-import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error
+import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error,tempfile,os
 import polygon_follow
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 LOCK=threading.Lock()
