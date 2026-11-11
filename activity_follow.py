@@ -10,8 +10,8 @@ def scan(c):
  # One-time, explicitly labeled 24-hour historical paper backfill; deduplicated by trade_key.
  c.execute("CREATE TABLE IF NOT EXISTS activity_backfill(id INTEGER PRIMARY KEY CHECK(id=1),completed INTEGER NOT NULL)")
  backfilled=c.execute("SELECT completed FROM activity_backfill WHERE id=1").fetchone()
- historical=not backfilled and os.getenv('COPY_HISTORICAL_BACKFILL','0')=='1'
- # Default to live-only on fresh/ephemeral databases: do not replay yesterday's trades on deploy.
+ historical=not backfilled and os.getenv('COPY_HISTORICAL_BACKFILL','1')=='1'
+ # Explicitly requested paper-trading start: initialize from last 24h on first run. Ephemeral DB can reset on restart; never use for real funds.
  start=max(1,now-86400) if historical else (row[0] if row else now)
  if not row:
   c.execute("INSERT INTO activity_cursor VALUES(1,?)",(now,))
