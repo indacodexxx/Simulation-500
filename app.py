@@ -3,6 +3,7 @@ import research
 import microstructure
 import polymarket_research
 import poly_lag
+import copy_wallet
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -317,6 +318,7 @@ class Handler(BaseHTTPRequestHandler):
   elif self.path.split("?")[0]=="/api/polymarket":body=json.dumps(polymarket_research.observe()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/polymarket/report":body=json.dumps(polymarket_research.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/polymarket/lag":body=json.dumps(poly_lag.report(DB)).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/copy":body=json.dumps(copy_wallet.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
@@ -334,6 +336,12 @@ def book_worker():
   except Exception as exc:
    with db() as c:audit(c,int(time.time()),"ERROR","MICROSTRUCTURE",str(exc)[:180])
   time.sleep(60)
+def copy_worker():
+ while True:
+  try:copy_wallet.run(DB)
+  except Exception as exc:
+   with db() as c:audit(c,int(time.time()),"ERROR","COPY",str(exc)[:180])
+  time.sleep(15)
 def poly_worker():
  while True:
   try:
@@ -343,8 +351,9 @@ def poly_worker():
    with db() as c:audit(c,int(time.time()),"ERROR","POLYMARKET",str(exc)[:180])
   time.sleep(120)
 if __name__=="__main__":
- init();microstructure.init(DB);polymarket_research.init(DB);poly_lag.init(DB)
+ init();microstructure.init(DB);polymarket_research.init(DB);poly_lag.init(DB);copy_wallet.init(DB)
  threading.Thread(target=worker,daemon=True).start()
  threading.Thread(target=book_worker,daemon=True).start()
  threading.Thread(target=poly_worker,daemon=True).start()
+ threading.Thread(target=copy_worker,daemon=True).start()
  ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
