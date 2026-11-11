@@ -56,8 +56,11 @@ def execute(path,fx=None,preloaded=None):
   c.execute("CREATE TABLE IF NOT EXISTS copy_skipped (trade_key TEXT PRIMARY KEY, t INTEGER, asset TEXT, side TEXT, reason TEXT)")
   count=0
   skipped=0
+  duplicates=0
   for ev in events:
-   if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(ev["key"],)).fetchone():continue
+   if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(ev["key"],)).fetchone():
+    duplicates+=1
+    continue
    asset=ev["asset"];market="Polymarket token "+asset[:20]
    pos=c.execute("SELECT shares,cost,last_price FROM copy_positions WHERE asset=?",(asset,)).fetchone()
    px=ev["price"]
@@ -92,5 +95,12 @@ def execute(path,fx=None,preloaded=None):
    c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,("Historical source trade (24h backfill); simulated later" if meta.get("historical") else "Live observed source trade; paper execution")))
    count+=1
   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
-  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders; "+str(skipped)+" skipped"))
+  raw=meta.get("raw_events",len(events))
+  filtered=meta.get("filtered",{})
+  c.execute("CREATE TABLE IF NOT EXISTS copy_poll_audit (id INTEGER PRIMARY KEY AUTOINCREMENT, checked INTEGER NOT NULL, raw_events INTEGER NOT NULL, eligible INTEGER NOT NULL, copied INTEGER NOT NULL, skipped INTEGER NOT NULL, duplicates INTEGER NOT NULL, before_cursor INTEGER NOT NULL, invalid_fields INTEGER NOT NULL, invalid_timestamp INTEGER NOT NULL, source_latest INTEGER)")
+  c.execute("INSERT INTO copy_poll_audit(checked,raw_events,eligible,copied,skipped,duplicates,before_cursor,invalid_fields,invalid_timestamp,source_latest) VALUES(?,?,?,?,?,?,?,?,?,?)",(now,raw,len(events),count,skipped,duplicates,filtered.get("before_cursor",0),filtered.get("invalid_fields",0),filtered.get("invalid_timestamp",0),meta.get("latest")))
+  c.execute("DELETE FROM copy_poll_audit WHERE id NOT IN (SELECT id FROM copy_poll_audit ORDER BY id DESC LIMIT 500)")
+  reason=("No new source trades after live cursor" if len(events)==0 else ("Source events observed but none copied" if count==0 else "Paper trades copied"))
+  reason+=f"; feed={raw}, eligible={len(events)}, copied={count}, skipped={skipped}, duplicates={duplicates}, before_cursor={filtered.get('before_cursor',0)}, invalid={filtered.get('invalid_fields',0)+filtered.get('invalid_timestamp',0)}"
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,raw,meta["latest"],len(events),count,reason))
  return {"status":"monitoring","copied":count,"polygon":meta,"cash_eur":round(cash,2)}
