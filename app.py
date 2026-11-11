@@ -38,10 +38,25 @@ def market_indicators(asset,kind,symbol,now):
   if d.get("error"):raise ValueError(str(d["error"]))
   candles=next(v for k,v in d["result"].items() if k!="last")
   points=[(int(x[0]),float(x[4]),float(x[6])) for x in candles if int(x[0])<=now-300]
+  bars=[(float(x[1]),float(x[2]),float(x[3]),float(x[4])) for x in candles if int(x[0])<=now-300]
  else:
   d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=5d")["chart"]["result"][0]
   q=d["indicators"]["quote"][0]
   points=[(int(t),float(p),float(v or 0)) for t,p,v in zip(d.get("timestamp") or [],q["close"],q.get("volume") or []) if p is not None and math.isfinite(float(p))]
+  bars=[(float(o),float(h),float(l),float(cl)) for o,h,l,cl in zip(q["open"],q["high"],q["low"],q["close"]) if all(v is not None and math.isfinite(float(v)) for v in (o,h,l,cl))]
+ if len(bars)<4:return None
+ a,b,c=bars[-3:]
+ def green(x):return x[3]>x[0]
+ def red(x):return x[3]<x[0]
+ body=abs(c[3]-c[0]);rng=max(c[1]-c[2],1e-12)
+ upper=c[1]-max(c[0],c[3]);lower=min(c[0],c[3])-c[2]
+ patterns=[]
+ if red(b) and green(c) and c[0]<=b[3] and c[3]>=b[0]:patterns.append("bullish_engulfing")
+ if green(b) and red(c) and c[0]>=b[3] and c[3]<=b[0]:patterns.append("bearish_engulfing")
+ if lower>=2*max(body,1e-12) and upper<=max(body,0.1*rng) and body/rng>=.08:patterns.append("hammer")
+ if upper>=2*max(body,1e-12) and lower<=max(body,0.1*rng) and body/rng>=.08:patterns.append("shooting_star")
+ if all(green(x) for x in (a,b,c)) and a[3]<b[3]<c[3]:patterns.append("three_green")
+ if all(red(x) for x in (a,b,c)) and a[3]>b[3]>c[3]:patterns.append("three_red")
  if len(points)<55 or now-points[-1][0]>900:return None
  prices=[p for _,p,_ in points];volumes=[v for _,_,v in points]
  latest=prices[-1];old=prices[-25]
@@ -59,13 +74,13 @@ def market_indicators(asset,kind,symbol,now):
  volatility=math.sqrt(sum((x-sum(returns)/len(returns))**2 for x in returns)/len(returns))*math.sqrt(24) if returns else 0
  vol_base=sum(volumes[-25:-1])/24
  volume_ratio=volumes[-1]/vol_base if vol_base>0 else None
- return {"momentum":latest/old-1,"rsi":round(rsi,2),"macd_pct":round(macd/latest*100,4),"sma20_gap_pct":round((latest/(sum(prices[-20:])/20)-1)*100,3),"volatility_2h_pct":round(volatility*100,3),"volume_ratio":round(volume_ratio,2) if volume_ratio is not None else None,"candles":len(points)}
+ return {"momentum":latest/old-1,"rsi":round(rsi,2),"macd_pct":round(macd/latest*100,4),"sma20_gap_pct":round((latest/(sum(prices[-20:])/20)-1)*100,3),"volatility_2h_pct":round(volatility*100,3),"volume_ratio":round(volume_ratio,2) if volume_ratio is not None else None,"candles":len(points),"patterns":patterns,"last_candle":"green" if green(c) else ("red" if red(c) else "doji"),"last_ohlc":{"open":c[0],"high":c[1],"low":c[2],"close":c[3]}}
 
 def ai_approve(asset,indicators,price):
  key=os.getenv("OPENAI_API_KEY","")
  if not key:return False,"OPENAI_API_KEY absente"
  model=os.getenv("OPENAI_MODEL","gpt-4.1-mini")
- payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":round(max(.018,2*fee_rate(asset)+.014)*100,2),"fee_per_side_pct":round(fee_rate(asset)*100,2),"paper_trading":True})}],"max_output_tokens":70}
+ payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators and actual candlestick patterns, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":round(max(.018,2*fee_rate(asset)+.014)*100,2),"fee_per_side_pct":round(fee_rate(asset)*100,2),"paper_trading":True})}],"max_output_tokens":70}
  req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
  try:
   with urllib.request.urlopen(req,timeout=18) as r:result=json.load(r)
@@ -127,7 +142,7 @@ def scan():
    try:ind=market_indicators(a,kind,ASSETS[a][1],now)
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
-   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0 and (max(.018,2*fee_rate(a)+.014)-2*fee_rate(a))/(.012+2*fee_rate(a))>=.5:candidates.append((ind["momentum"],a,px,ind))
+   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0 and (max(.018,2*fee_rate(a)+.014)-2*fee_rate(a))/(.012+2*fee_rate(a))>=.5 and any(p in ind["patterns"] for p in ("bullish_engulfing","hammer","three_green")):candidates.append((ind["momentum"],a,px,ind))
   audit(c,now,"SIGNALS","",f"{len(candidates)} signaux éligibles; "+", ".join(a for _,a,_,_ in candidates[:8]))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
   daily_loss_limit=max(0,day_start*.03)
