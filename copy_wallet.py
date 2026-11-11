@@ -13,6 +13,16 @@ def activity(limit=100):
  data=fetch(url)
  if not isinstance(data,list):raise ValueError("Unexpected activity payload")
  return data
+def target_exposure_value():
+ data=fetch("https://data-api.polymarket.com/value?"+urllib.parse.urlencode({"user":TARGET}))
+ if not isinstance(data,list):raise ValueError("Target position value unavailable")
+ value=sum(float(x.get("value") or 0) for x in data)
+ if value<=0:raise ValueError("Target open-position value is zero; cannot size proportional trades")
+ return value
+def usd_per_eur():
+ d=fetch("https://api.kraken.com/0/public/Ticker?pair=EURUSD")
+ if d.get("error"):raise ValueError(str(d["error"]))
+ return float(next(iter(d["result"].values()))["c"][0])
 def init(path):
  with sqlite3.connect(path,timeout=15) as c:
   c.execute("CREATE TABLE IF NOT EXISTS copy_state (id INTEGER PRIMARY KEY CHECK(id=1),cash REAL,last_seen INTEGER,started INTEGER,error TEXT)")
@@ -25,10 +35,19 @@ def run(path):
  except Exception as e:
   with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(e)[:250],))
   return {"error":str(e)[:250]}
- # The first poll sets a watermark; no replay of old trades.
+ try:
+  denominator=target_exposure_value()
+  fx=usd_per_eur()
+ except Exception as e:
+  with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",("Sizing unavailable: "+str(e))[:250],)
+  return {"error":"Sizing unavailable: "+str(e)[:180]}
+ # Target's public open-position value excludes unknown cash balance.
+ # Paper ledger is USD internally; 500 EUR starting capital converted to USD.
+
  with LOCK,sqlite3.connect(path,timeout=15) as c:
   state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
   cash,last_seen,started=state
+  if not started:cash=500*fx
   valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and e.get("asset")]
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
@@ -48,7 +67,10 @@ def run(path):
     if c.execute("SELECT COUNT(*) FROM copy_positions").fetchone()[0]>=5 and not p:continue
     # Assumed 2 cent price disadvantage + 1 cent execution cost per share, not observed fill.
     simulated_price=min(.99,price+.02)
-    amount=min(10.0,cash*.05,target_size*simulated_price)
+    target_notional=target_size*price
+    target_weight=target_notional/denominator
+    paper_equity=cash+sum(x[0]*x[2] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
+    amount=min(cash,max(0,paper_equity*target_weight))
     if amount<1:continue
     shares=amount/(simulated_price+.01)
     cash-=amount
@@ -58,7 +80,9 @@ def run(path):
    else:
     if not p:continue
     simulated_price=max(.001,price-.02)
-    shares=min(p[0],target_size)
+    target_weight=(target_size*price)/denominator
+    paper_equity=cash+sum(x[0]*x[2] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
+    shares=min(p[0],max(0,paper_equity*target_weight)/max(.001,p[2]))
     amount=max(0,shares*(simulated_price-.01))
     cash+=amount
     left=p[0]-shares
@@ -76,8 +100,8 @@ def report(path):
   positions=c.execute("SELECT asset,market,shares,cost,last_price FROM copy_positions ORDER BY cost DESC").fetchall()
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
  cash,last_seen,started,error=state
- return {"target":TARGET,"cash_usd":round(cash,2),"positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
+ return {"target":TARGET,"cash_usd":round(cash,2),"starting_capital_eur":500,"sizing_method":"target_trade_usd / target_open_positions_value_usd (proxy, excludes unknown cash)","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "last_target_trade":last_seen,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
- "warning":"500 USD separate paper account; positions valued at last simulated trade, not current mark. No historical trades copied. 2c adverse price and 1c/share assumed. Free hosting may sleep and reset storage."}
+ "warning":"Initial capital 500 EUR converted to USD at Kraken spot on first poll. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
