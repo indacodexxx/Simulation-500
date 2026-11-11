@@ -15,17 +15,23 @@ def scan(c):
  if not row:
   c.execute("INSERT INTO activity_cursor VALUES(1,?)",(now,))
  rows=[]
- # Fetch all recent fills, not just the first 200. Never silently truncate busy wallets.
- for offset in range(0,2000,200):
-  url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":200,"offset":offset,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"})
-  payload=fetch(url)
+ # Polymarket V2 pagination uses next_cursor, never offset.
+ cursor=None
+ for page_number in range(50):
+  params={"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"}
+  if cursor:params["cursor"]=cursor
+  payload=fetch("https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode(params))
   page=payload.get("data") if isinstance(payload,dict) else payload
   if not isinstance(page,list):raise ValueError("Unexpected Polymarket V2 activity response")
   rows.extend(page)
-  if len(page)<200:break
+  if not page:break
   if min((int(a.get("timestamp") or 0) for a in page if isinstance(a,dict)),default=0)<start:break
+  next_cursor=payload.get("next_cursor") if isinstance(payload,dict) else None
+  if not next_cursor:break
+  if next_cursor==cursor:raise RuntimeError("Polymarket activity cursor did not advance")
+  cursor=next_cursor
  else:
-  raise RuntimeError("Wallet activity exceeded 2000 fills; refusing to silently miss trades")
+  raise RuntimeError("Wallet activity exceeded 50 pages; refusing to silently miss trades")
  events=[]
  for a in rows:
   try:
