@@ -107,6 +107,7 @@ def run(path):
  try:
   return polygon_follow.execute(path)
  except Exception as exc:
+  print("SIM500_COPY_ERROR:",repr(exc),flush=True)
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polygon follower error: "+str(exc)[:180]))
