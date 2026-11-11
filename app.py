@@ -1,4 +1,5 @@
 import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback,concurrent.futures
+import research
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -241,6 +242,45 @@ def scan():
   if errors:audit(c,now,"ERROR","", "; ".join(errors[:6]))
   if equity<=day_start-daily_loss_limit:audit(c,now,"BLOCK","","Coupe-circuit de perte journalière actif")
   c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"; ".join(errors[:6]) if errors else None))
+_research_cache={"t":0,"data":None}
+_research_lock=threading.Lock()
+def historical_bars(a):
+ kind,symbol,_=ASSETS[a]
+ if kind=="crypto":
+  pair={"BTC-EUR":"XXBTZEUR","ETH-EUR":"XETHZEUR","SOL-EUR":"SOLEUR"}[a]
+  d=get("https://api.kraken.com/0/public/OHLC?pair="+pair+"&interval=5")
+  if d.get("error"):raise ValueError(str(d["error"]))
+  raw=next(v for k,v in d["result"].items() if k!="last")
+  bars=[{"timestamp":int(x[0]),"open":float(x[1]),"high":float(x[2]),"low":float(x[3]),"close":float(x[4])} for x in raw if int(x[0])<int(time.time())-300]
+ else:
+  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=5d")["chart"]["result"][0]
+  q=d["indicators"]["quote"][0]
+  bars=[]
+  for t,o,h,l,c in zip(d.get("timestamp") or [],q["open"],q["high"],q["low"],q["close"]):
+   if any(x is None for x in (o,h,l,c)):continue
+   bars.append({"timestamp":int(t),"open":float(o),"high":float(h),"low":float(l),"close":float(c)})
+ return [b for b in bars if all(math.isfinite(b[k]) and b[k]>0 for k in ("open","high","low","close")) and b["high"]>=max(b["open"],b["close"]) and b["low"]<=min(b["open"],b["close"])]
+
+def research_snapshot():
+ now=time.time()
+ with _research_lock:
+  if _research_cache["data"] is not None and now-_research_cache["t"]<1800:return _research_cache["data"]
+  assets=("BTC-EUR","ETH-EUR","SOL-EUR","SPY","QQQ","AAPL","NVDA","MC.PA","AIR.PA")
+  out={"generated_at":int(now),"status":"research_only","results":[],"errors":[],"warning":"Historique court (Kraken 5 min / Yahoo 5 jours), insuffisant pour valider une strategie pour le trading reel. Aucun ordre passe."}
+  def process(a):
+   bars=historical_bars(a)
+   return a,research.run(bars,"crypto" if ASSETS[a][0]=="crypto" else "equity")
+  with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+   futures={pool.submit(process,a):a for a in assets}
+   for fut in concurrent.futures.as_completed(futures):
+    a=futures[fut]
+    try:
+     name,res=fut.result();out["results"].append({"asset":name,**res})
+    except Exception as e:out["errors"].append({"asset":a,"error":str(e)[:180]})
+  out["results"].sort(key=lambda r:r["asset"])
+  _research_cache.update(t=now,data=out)
+  return out
+
 def snapshot():
  now=int(time.time())
  with db() as c:
@@ -269,6 +309,7 @@ class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
   if self.path.split("?")[0] in ("/","/index.html"):body=HTML;mime="text/html; charset=utf-8"
   elif self.path.split("?")[0]=="/api/state":body=json.dumps(snapshot()).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/research":body=json.dumps(research_snapshot()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
