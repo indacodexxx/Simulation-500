@@ -129,7 +129,7 @@ def scan():
    fee=fee_rate(a)
    target=max(.018,2*fee+.014)
    if change>=target or change<=-.012:
-    fee=.004 if ASSETS[a][0]=="crypto" else .001
+    fee=fee_rate(a)
     proceeds=p["qty"]*px*(1-fee);cash+=proceeds
     c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"SELL",px,proceeds,proceeds-p["cost"],"Micro take profit" if change>=target else "Micro stop loss"))
     audit(c,now,"SELL",a,f"Sortie simulée: prix EUR={px:.6f}, frais={fee*100:.2f}% par côté, P&L net={proceeds-p['cost']:.4f} EUR")
@@ -142,18 +142,24 @@ def scan():
    try:ind=market_indicators(a,kind,ASSETS[a][1],now)
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
-   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0 and (max(.018,2*fee_rate(a)+.014)-2*fee_rate(a))/(.012+2*fee_rate(a))>=.5 and any(p in ind["patterns"] for p in ("bullish_engulfing","hammer","three_green")):candidates.append((ind["momentum"],a,px,ind))
+   if ind is None:continue
+   trend=.002<ind["momentum"]<.04 and 38<=ind["rsi"]<=70 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0
+   reversal=any(p in ind["patterns"] for p in ("bullish_engulfing","hammer")) and 28<=ind["rsi"]<=65 and ind["momentum"]>-.025 and ind["sma20_gap_pct"]>-.8
+   candle_continuation="three_green" in ind["patterns"] and 38<=ind["rsi"]<=72 and ind["momentum"]>0
+   ind["entry_setup"]="trend" if trend else ("reversal" if reversal else ("three_green" if candle_continuation else "none"))
+   if trend or reversal or candle_continuation:
+    last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
+    if last and now-last<300:
+     audit(c,now,"BLOCK",a,"Signal détecté, mais cooldown de 5 minutes")
+     continue
+    candidates.append((ind["momentum"],a,px,ind))
   audit(c,now,"SIGNALS","",f"{len(candidates)} signaux éligibles; "+", ".join(a for _,a,_,_ in candidates[:8]))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
   daily_loss_limit=max(0,day_start*.03)
   recent_trades=c.execute("SELECT COUNT(*) FROM trades WHERE side='BUY' AND t>?",(now-3600,)).fetchone()[0]
   if len(pos)<3 and cash>=30 and candidates and equity>day_start-daily_loss_limit and recent_trades<12:
-   mom,a,px,ind=max(candidates);amount=min(75,cash*.30);fee=.004 if ASSETS[a][0]=="crypto" else .001
+   mom,a,px,ind=max(candidates,key=lambda x:(x[3]["entry_setup"]=="trend",x[0]));amount=min(75,cash*.30);fee=fee_rate(a)
    last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
-   if last and now-last<300:
-    audit(c,now,"BLOCK",a,"Délai minimum de 5 minutes depuis le dernier achat")
-    c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"Cooldown 5 min "+a))
-    return
    # 2% stop + round-trip fees must not exceed 1% of initial 500 EUR.
    if amount*(.012+2*fee)>5:amount=5/(.012+2*fee)
    approved,decision=ai_approve(a,ind,px)
