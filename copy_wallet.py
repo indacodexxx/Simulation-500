@@ -24,6 +24,49 @@ def usd_per_eur():
  d=fetch("https://api.kraken.com/0/public/Ticker?pair=EURUSD")
  if d.get("error"):raise ValueError(str(d["error"]))
  return float(next(iter(d["result"].values()))["c"][0])
+def open_positions():
+ """Fetch public open positions; reject unknown response shapes rather than inventing positions."""
+ url="https://data-api.polymarket.com/v2/positions?"+urllib.parse.urlencode({"user":TARGET,"limit":500})
+ payload=fetch(url)
+ rows=payload.get("data") if isinstance(payload,dict) else payload
+ if isinstance(rows,dict):rows=rows.get("positions")
+ if not isinstance(rows,list):raise ValueError("Unexpected v2 positions payload; no bootstrap performed")
+ positions=[]
+ for p in rows:
+  if not isinstance(p,dict):continue
+  asset=p.get("token_id") or p.get("asset") or p.get("tokenId")
+  shares=float(p.get("size") or 0)
+  price=float(p.get("curPrice") or p.get("current_price") or p.get("price") or 0)
+  value=float(p.get("currentValue") or p.get("current_value") or shares*price)
+  if asset and shares>0 and 0.02<=price<=0.98 and value>0:
+   positions.append((str(asset),str(p.get("title") or p.get("slug") or p.get("conditionId") or ""),shares,price,value))
+ return positions
+def bootstrap(path,now):
+ """Initial paper allocation mirrors observable open-position weights, not unknown source cash."""
+ positions=open_positions()
+ if not positions:raise ValueError("No eligible public open positions returned")
+ total=sum(p[4] for p in positions)
+ if total<=0:raise ValueError("Source position value is zero")
+ fx=usd_per_eur()
+ with LOCK,sqlite3.connect(path,timeout=15) as c:
+  state=c.execute("SELECT cash,started FROM copy_state WHERE id=1").fetchone()
+  if state[1]:return {"status":"already_started"}
+  cash=500.0
+  copied=0
+  for asset,market,source_shares,price,value in sorted(positions,key=lambda p:p[4],reverse=True)[:5]:
+   allocation=min(cash,500.0*value/total)
+   simulated_price=min(.99,price+.02)
+   if allocation<1:continue
+   shares=allocation*fx/(simulated_price+.01)
+   cash-=allocation
+   c.execute("INSERT OR REPLACE INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,shares,allocation,simulated_price))
+   c.execute("INSERT OR IGNORE INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
+    ("bootstrap:"+asset,now,market,asset,"BUY",price,simulated_price,shares,allocation,"Initial public open-position snapshot; hypothetical 2c price disadvantage and 1c/share cost"))
+   copied+=1
+  if not copied:raise ValueError("All public position allocations were below 1 EUR")
+  c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,now))
+  c.execute("UPDATE copy_health SET checked=?,events=0,latest=0,candidates=?,copied=?,reason=? WHERE id=1",(now,len(positions),copied,"Initial public open positions synchronized"))
+ return {"status":"bootstrapped","positions":copied,"cash_eur":round(cash,2)}
 def init(path):
  with sqlite3.connect(path,timeout=15) as c:
   c.execute("CREATE TABLE IF NOT EXISTS copy_state (id INTEGER PRIMARY KEY CHECK(id=1),cash REAL,last_seen INTEGER,started INTEGER,error TEXT)")
@@ -34,13 +77,22 @@ def init(path):
   c.execute("INSERT OR IGNORE INTO copy_health VALUES(1,0,0,0,0,0,'Not polled yet')")
 def run(path):
  now=int(time.time())
+ with LOCK,sqlite3.connect(path,timeout=15) as c:
+  started=c.execute("SELECT started FROM copy_state WHERE id=1").fetchone()[0]
+ if not started:
+  try:return bootstrap(path,now)
+  except Exception as exc:
+   with LOCK,sqlite3.connect(path,timeout=15) as c:
+    c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Bootstrap unavailable: "+str(exc))[:250],))
+    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Bootstrap unavailable: "+str(exc)[:150]))
+   return {"error":"Bootstrap unavailable: "+str(exc)[:180]}
  try:events=activity(100)
  except Exception as e:
   with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(e)[:250],))
   return {"error":str(e)[:250]}
 
  # Target's public open-position value excludes unknown cash balance.
- # Paper ledger is USD internally; 500 EUR starting capital converted to USD.
+ # Paper ledger is EUR; USD contract prices converted at time of simulated order.
 
  with LOCK,sqlite3.connect(path,timeout=15) as c:
   state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
@@ -114,4 +166,4 @@ def report(path):
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
  "last_target_trade":last_seen,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
- "warning":"Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
+ "warning":"Initial snapshot allocation mirrors top five public positions only, excludes unknown source cash and is not exact portfolio copy. Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
