@@ -1,5 +1,5 @@
 """Public Polymarket wallet follow in PAPER mode only.
-Trades are copied from the public Data API with a 500 USD independent ledger.
+Trades are copied from the public Data API with a 500 EUR independent ledger.
 No keys, wallets, on-chain transactions or real orders.
 """
 import json,time,sqlite3,threading,urllib.request,urllib.parse
@@ -35,19 +35,14 @@ def run(path):
  except Exception as e:
   with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(e)[:250],))
   return {"error":str(e)[:250]}
- try:
-  denominator=target_exposure_value()
-  fx=usd_per_eur()
- except Exception as e:
-  with LOCK,sqlite3.connect(path,timeout=15) as c:c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(e))[:250],))
-  return {"error":"Sizing unavailable: "+str(e)[:180]}
+
  # Target's public open-position value excludes unknown cash balance.
  # Paper ledger is USD internally; 500 EUR starting capital converted to USD.
 
  with LOCK,sqlite3.connect(path,timeout=15) as c:
   state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
   cash,last_seen,started=state
-  if not started:cash=500*fx
+  if not started:cash=500
   valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and e.get("asset")]
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
@@ -56,6 +51,13 @@ def run(path):
   # No trades older than 90 seconds, no retroactive backfills, and duplicate-safe.
   new=sorted((e for e in valid if int(e["timestamp"])>last_seen and now-int(e["timestamp"])<=90),key=lambda e:int(e["timestamp"]))
   copied=0
+  if new:
+   try:
+    denominator=target_exposure_value()
+    fx=usd_per_eur()
+   except Exception as exc:
+    c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(exc))[:250],))
+    return {"error":"Sizing unavailable: "+str(exc)[:180]}
   for e in new:
    side=str(e["side"]).upper();asset=str(e["asset"]);t=int(e["timestamp"]);market=str(e.get("title") or e.get("slug") or e.get("conditionId") or "")
    price=float(e.get("price") or 0);target_size=float(e.get("size") or 0)
@@ -69,10 +71,10 @@ def run(path):
     simulated_price=min(.99,price+.02)
     target_notional=target_size*price
     target_weight=target_notional/denominator
-    paper_equity=cash+sum(x[0]*x[2] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
+    paper_equity=cash+sum(x[1] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
     amount=min(cash,max(0,paper_equity*target_weight))
     if amount<1:continue
-    shares=amount/(simulated_price+.01)
+    shares=amount*fx/(simulated_price+.01)
     cash-=amount
     old_shares,old_cost=(p[0],p[1]) if p else (0,0)
     c.execute("INSERT OR REPLACE INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,old_shares+shares,old_cost+amount,simulated_price))
@@ -82,8 +84,8 @@ def run(path):
     simulated_price=max(.001,price-.02)
     target_weight=(target_size*price)/denominator
     paper_equity=cash+sum(x[0]*x[2] for x in c.execute("SELECT shares,cost,last_price FROM copy_positions"))
-    shares=min(p[0],max(0,paper_equity*target_weight)/max(.001,p[2]))
-    amount=max(0,shares*(simulated_price-.01))
+    shares=min(p[0],max(0,paper_equity*target_weight)*fx/max(.001,p[2]))
+    amount=max(0,shares*(simulated_price-.01)/fx)
     cash+=amount
     left=p[0]-shares
     if left<1e-7:c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
@@ -100,8 +102,8 @@ def report(path):
   positions=c.execute("SELECT asset,market,shares,cost,last_price FROM copy_positions ORDER BY cost DESC").fetchall()
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
  cash,last_seen,started,error=state
- return {"target":TARGET,"cash_usd":round(cash,2),"starting_capital_eur":500,"sizing_method":"target_trade_usd / target_open_positions_value_usd (proxy, excludes unknown cash)","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
+ return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"target_trade_usd / target_open_positions_value_usd (proxy, excludes unknown cash)","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "last_target_trade":last_seen,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
- "warning":"Initial capital 500 EUR converted to USD at Kraken spot on first poll. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
+ "warning":"Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
