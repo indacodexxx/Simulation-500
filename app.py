@@ -62,16 +62,6 @@ def scan():
    if cur=="EUR":return q[0]
    if cur=="USD" and fx and now-fx[1]<600 and fx[0]>0:return q[0]/fx[0]
    return None
-  # Immediate, explicitly labeled paper-trade execution test: one buy and one sell.
-  # Execute only against a fresh actual EUR quote, and only once per database.
-  already=c.execute("SELECT 1 FROM trades WHERE reason LIKE 'TEST EXECUTION%' LIMIT 1").fetchone()
-  if not already and "BTC-EUR" in fresh and now-fresh["BTC-EUR"][1]<120 and cash>=100:
-   px=fresh["BTC-EUR"][0];amount=50.0;fee=.004
-   qty=amount*(1-fee)/px
-   proceeds=qty*px*(1-fee)
-   cash=cash-amount+proceeds
-   c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,"BTC-EUR","BUY",px,amount,0,"TEST EXECUTION - achat fictif au cours Kraken"))
-   c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,"BTC-EUR","SELL",px,proceeds,proceeds-amount,"TEST EXECUTION - vente fictive immediate, frais simules"))
   pos={r["asset"]:dict(r) for r in c.execute("SELECT * FROM positions")}
   for a,p in list(pos.items()):
    px=eur(a)
@@ -114,7 +104,7 @@ def snapshot():
   trades=[dict(x) for x in c.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 100")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Sur Render gratuit, veille et stockage ephemere: pas de garantie 24/7 ni de conservation des trades."}
+  return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 60 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
@@ -130,6 +120,6 @@ def worker():
   try:scan()
   except Exception as e:
    with db() as c:c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
-  time.sleep(300)
+  time.sleep(60)
 if __name__=="__main__":
  init();threading.Thread(target=worker,daemon=True).start();ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
