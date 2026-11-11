@@ -45,10 +45,10 @@ def scan(c,limit=250):
  events.sort(key=lambda x:(x["block"],x["key"]))
  c.execute("INSERT INTO polygon_cursor(id,block) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET block=excluded.block",(end,))
  return events,{"latest":latest,"cursor":end,"events":len(events)}
-def execute(path,fx=None):
+def execute(path,fx=None,preloaded=None):
  now=int(time.time())
  with sqlite3.connect(path,timeout=20) as c:
-  events,meta=scan(c)
+  events,meta=preloaded if preloaded is not None else scan(c)
   if events and fx is None:
    from copy_wallet import usd_per_eur
    fx=usd_per_eur()
