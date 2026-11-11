@@ -5,6 +5,22 @@ No keys, wallets, on-chain transactions or real orders.
 import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 LOCK=threading.Lock()
+POLYGON_RPC="https://polygon-bor-rpc.publicnode.com"
+CTF="0x4d97dcd97ec945f40cf65f87097ace5ea0476045"
+def polygon_rpc(method,params):
+ body=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
+ req=urllib.request.Request(POLYGON_RPC,data=body,headers={"Content-Type":"application/json","User-Agent":"Simulation500/1.0"})
+ with urllib.request.urlopen(req,timeout=12) as response:result=json.load(response)
+ if "error" in result:raise RuntimeError("Polygon RPC: "+str(result["error"])[:180])
+ return result["result"]
+def polygon_probe():
+ """Read-only Polygon ERC-1155 transfer probe. Not equivalent to filled trades."""
+ latest=int(polygon_rpc("eth_blockNumber",[]),16)
+ # ERC1155 TransferSingle(address,address,address,uint256,uint256)
+ topic="0xc3d58168c5bfaa3c6d2e3b3f1d7e6c6a5b5a9d1e5b2c7b5a6a6d8e3f4e2c8e0"
+ # Use TransferSingle signature topic computed with Ethereum keccak, never a guessed hash.
+ return {"block":latest,"rpc":POLYGON_RPC,"wallet":TARGET,"note":"RPC connectivity only; transfers require verified event topics and token mapping"}
+
 def fetch(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Simulation500-PaperCopy/1.0","Accept":"application/json"})
  try:
@@ -100,6 +116,10 @@ def run(path):
  except Exception:
   events=[]
   latest_event=0
+ try:
+  polygon_status=polygon_probe()
+ except Exception as exc:
+  polygon_status={"error":str(exc)[:150]}
  # Limit exposure to the top five current public positions. No source cash visibility.
  selected=sorted(positions,key=lambda x:x[4],reverse=True)[:5]
  total=sum(x[4] for x in positions)
@@ -135,7 +155,7 @@ def run(path):
    copied+=1
   c.execute("UPDATE copy_state SET cash=?,last_seen=?,error=NULL WHERE id=1",(cash,latest_event))
   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",
-   (now,len(events),latest_event,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "No OPEN positions; "+str(len(events))+" recent public activity events; latest timestamp "+str(latest_event)+"; no paper orders invented" if not positions else "Snapshot checked; no change in top five positions"))
+   (now,len(events),latest_event,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "No OPEN positions; "+str(len(events))+" recent activity events; Polygon RPC "+("connected at block "+str(polygon_status["block"]) if "block" in polygon_status else "error: "+polygon_status.get("error","unknown"))+"; no invented trades" if not positions else "Snapshot checked; no change in top five positions"))
  return {"status":"monitoring","copied":copied,"source_open_positions":len(positions),"cash_eur":round(cash,2)}
 def report(path):
  with LOCK,sqlite3.connect(path,timeout=15) as c:
