@@ -1,5 +1,6 @@
 import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback,concurrent.futures
 import research
+import microstructure
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -300,7 +301,7 @@ def snapshot():
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   performance=comparison(c,pos,eur,s["cash"])
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; zero simulated transaction fees; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"performance_comparison":performance,"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement, sans frais de transaction simules. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; selective experimental trend mode; up to 3 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"performance_comparison":performance,"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement, avec commissions estimees mais hors spread et slippage. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
@@ -309,6 +310,7 @@ class Handler(BaseHTTPRequestHandler):
   if self.path.split("?")[0] in ("/","/index.html"):body=HTML;mime="text/html; charset=utf-8"
   elif self.path.split("?")[0]=="/api/state":body=json.dumps(snapshot()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/research":body=json.dumps(research_snapshot()).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/microstructure":body=json.dumps(microstructure.snapshot()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
