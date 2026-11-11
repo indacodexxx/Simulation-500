@@ -29,6 +29,8 @@ def init(path):
   c.execute("INSERT OR IGNORE INTO copy_state VALUES(1,500,0,0,NULL)")
   c.execute("CREATE TABLE IF NOT EXISTS copy_trades (id INTEGER PRIMARY KEY AUTOINCREMENT,trade_key TEXT UNIQUE,t INTEGER,market TEXT,asset TEXT,side TEXT,target_price REAL,paper_price REAL,shares REAL,spent REAL,reason TEXT)")
   c.execute("CREATE TABLE IF NOT EXISTS copy_positions (asset TEXT PRIMARY KEY,market TEXT,shares REAL,cost REAL,last_price REAL)")
+  c.execute("CREATE TABLE IF NOT EXISTS copy_health (id INTEGER PRIMARY KEY CHECK(id=1),checked INTEGER,events INTEGER,latest INTEGER,candidates INTEGER,copied INTEGER,reason TEXT)")
+  c.execute("INSERT OR IGNORE INTO copy_health VALUES(1,0,0,0,0,0,'Not polled yet')")
 def run(path):
  now=int(time.time())
  try:events=activity(100)
@@ -46,6 +48,7 @@ def run(path):
   valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and e.get("asset")]
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
+   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=0,copied=0,reason=? WHERE id=1",(now,len(valid),latest,"First poll: historical trades excluded"))
    c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-30)))
    return {"status":"initialized","recent_public_trades":len(valid),"latest_public_trade":latest}
   # Overlap 5 minutes to handle delayed indexing; deduplicate by stable trade key.
@@ -56,6 +59,7 @@ def run(path):
     denominator=target_exposure_value()
     fx=usd_per_eur()
    except Exception as exc:
+    c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=0,reason=? WHERE id=1",(now,len(valid),latest,len(new),"Sizing API error: "+str(exc)[:150]))
     c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(exc))[:250],))
     return {"error":"Sizing unavailable: "+str(exc)[:180]}
   for e in new:
@@ -94,6 +98,7 @@ def run(path):
    c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",
     (key,t,market,asset,side,price,simulated_price,shares,amount,reason))
    copied+=1
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,len(valid),latest,len(new),copied,"Trades copied" if copied else ("Candidates filtered or duplicate" if new else "No new public trades in polling window")))
   c.execute("UPDATE copy_state SET cash=?,last_seen=?,error=NULL WHERE id=1",(cash,max(last_seen,latest)))
  return {"status":"running","copied":copied,"latest_public_trade":latest}
 def report(path):
@@ -101,9 +106,11 @@ def report(path):
   state=c.execute("SELECT cash,last_seen,started,error FROM copy_state WHERE id=1").fetchone()
   positions=c.execute("SELECT asset,market,shares,cost,last_price FROM copy_positions ORDER BY cost DESC").fetchall()
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
+  health=c.execute("SELECT checked,events,latest,candidates,copied,reason FROM copy_health WHERE id=1").fetchone()
  cash,last_seen,started,error=state
  return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"target_trade_usd / target_open_positions_value_usd (proxy, excludes unknown cash)","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
+ "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
  "last_target_trade":last_seen,"started":started,"error":error,"execution_enabled":False,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
  "warning":"Initial capital and paper cash held in EUR; individual simulated contracts priced in USD using Kraken EUR/USD at copying time. Target weight is trade notional divided by public OPEN POSITION value, not actual full portfolio equity: target cash is unknown, so exact percentage matching is impossible. No historical trades copied. 2c adverse price and 1c/share assumed. Render storage ephemeral."}
