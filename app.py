@@ -4,6 +4,9 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 PORT=int(os.getenv("PORT","10000")); DB=os.getenv("DB_PATH","/tmp/simulation500.sqlite")
 ASSETS={"BTC-EUR":("crypto","BTCEUR","EUR"),"ETH-EUR":("crypto","ETHEUR","EUR"),"SOL-EUR":("crypto","SOLEUR","EUR"),"SPY":("etf","SPY","USD"),"QQQ":("etf","QQQ","USD"),"DIA":("etf","DIA","USD"),"IWM":("etf","IWM","USD"),"EWQ":("etf","EWQ","USD"),"EWG":("etf","EWG","USD"),"EWJ":("etf","EWJ","USD"),"GLD":("etf","GLD","USD"),"SLV":("etf","SLV","USD"),"TLT":("etf","TLT","USD"),"AAPL":("stock","AAPL","USD"),"MSFT":("stock","MSFT","USD"),"NVDA":("stock","NVDA","USD"),"TSLA":("stock","TSLA","USD"),"ASML":("stock","ASML","USD"),"MC.PA":("stock","MC.PA","EUR"),"AIR.PA":("stock","AIR.PA","EUR"),"CAC40":("index","^FCHI","EUR"),"SP500":("index","^GSPC","USD"),"NASDAQ100":("index","^NDX","USD"),"DAX":("index","^GDAXI","EUR"),"NIKKEI":("index","^N225","JPY"),"HANGSENG":("index","^HSI","HKD"),"FTSE":("index","^FTSE","GBP"),"VIX":("index","^VIX","USD"),"EURUSD":("fx","EURUSD=X","USD")}
+def fee_rate(asset):
+ # Conservative simulated taker fee, configurable; never a claim of actual exchange execution.
+ return float(os.getenv("CRYPTO_TAKER_FEE","0.008")) if ASSETS[asset][0]=="crypto" else float(os.getenv("EQUITY_SIM_FEE","0.001"))
 def db():
  c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;return c
 def init():
@@ -58,7 +61,7 @@ def ai_approve(asset,indicators,price):
  key=os.getenv("OPENAI_API_KEY","")
  if not key:return False,"OPENAI_API_KEY absente"
  model=os.getenv("OPENAI_MODEL","gpt-4.1-mini")
- payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":1.2,"paper_trading":True})}],"max_output_tokens":70}
+ payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":round(max(.018,2*fee_rate(asset)+.014)*100,2),"fee_per_side_pct":round(fee_rate(asset)*100,2),"paper_trading":True})}],"max_output_tokens":70}
  req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
  try:
   with urllib.request.urlopen(req,timeout=18) as r:result=json.load(r)
@@ -103,8 +106,8 @@ def scan():
    px=eur(a)
    if px is None:continue
    change=px/p["entry"]-1
-   fee=.004 if ASSETS[a][0]=="crypto" else .001
-   target=max(.012,2*fee+.006)
+   fee=fee_rate(a)
+   target=max(.018,2*fee+.014)
    if change>=target or change<=-.012:
     fee=.004 if ASSETS[a][0]=="crypto" else .001
     proceeds=p["qty"]*px*(1-fee);cash+=proceeds
@@ -118,7 +121,7 @@ def scan():
    try:ind=market_indicators(a,kind,ASSETS[a][1],now)
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
-   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0:candidates.append((ind["momentum"],a,px,ind))
+   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0 and (max(.018,2*fee_rate(a)+.014)-2*fee_rate(a))/(.012+2*fee_rate(a))>=.5:candidates.append((ind["momentum"],a,px,ind))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
   daily_loss_limit=max(0,day_start*.03)
   recent_trades=c.execute("SELECT COUNT(*) FROM trades WHERE side='BUY' AND t>?",(now-3600,)).fetchone()[0]
@@ -158,7 +161,7 @@ def snapshot():
   decisions=[dict(x) for x in c.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT 20")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"cost-aware micro trading; max 12 buys/hour; 5 min asset cooldown; 3% daily circuit breaker","cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; conservative taker-fee model; max 12 buys/hour; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
