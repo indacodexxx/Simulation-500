@@ -169,17 +169,11 @@ def scan():
     fee=fee_rate(a)
     if amount*(.012+2*fee)>3:amount=3/(.012+2*fee)
     if amount<15:continue
-    approved,decision=ai_approve(a,ind,px)
-    c.execute("INSERT INTO decisions(t,asset,indicators,decision,reason) VALUES(?,?,?,?,?)",(now,a,json.dumps(ind),"APPROVE" if approved else "REJECT",decision))
-    c.execute("DELETE FROM decisions WHERE id NOT IN (SELECT id FROM decisions ORDER BY id DESC LIMIT 100)")
-    audit(c,now,"AI",a,f"{decision}; setup={ind['entry_setup']}; patterns={ind['patterns']}")
-    if not approved:
-     audit(c,now,"BLOCK",a,"Signal refusé par le contrôle IA")
-     continue
+    audit(c,now,"SIGNAL",a,f"Signal technique accepté sans contrôle IA; setup={ind['entry_setup']}; patterns={ind['patterns']}")
     qty=amount*(1-fee)/px
     cash-=amount
     c.execute("INSERT INTO positions VALUES(?,?,?,?)",(a,qty,px,amount))
-    c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"BUY",px,amount,0,"IA validée; stratégie "+ind["entry_setup"]))
+    c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"BUY",px,amount,0,"Signal technique; stratégie "+ind["entry_setup"]))
     audit(c,now,"BUY",a,f"Achat fictif {amount:.2f} EUR; stratégie={ind['entry_setup']}; prix={px:.6f}; frais={fee*100:.2f}%")
     pos[a]={"asset":a,"qty":qty,"entry":px,"cost":amount}
   if errors:audit(c,now,"ERROR","", "; ".join(errors[:3]))
