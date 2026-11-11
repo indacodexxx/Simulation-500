@@ -1,4 +1,4 @@
-import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback
+import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback,concurrent.futures
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -97,19 +97,38 @@ def ai_approve(asset,indicators,price):
 
 def scan():
  now=int(time.time());errors=[];fresh={}
- for a,(kind,symbol,cur) in ASSETS.items():
-  try:
-   p,t,src=quote(a,kind,symbol)
-   if not math.isfinite(p) or p<=0 or t>now+60:raise ValueError("cours invalide")
-   fresh[a]=(p,t,src)
-  except Exception as e:errors.append(a+": "+str(e)[:55])
+ def load_quote(item):
+  a,(kind,symbol,cur)=item
+  return a,quote(a,kind,symbol)
+ with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+  futures={pool.submit(load_quote,item):item[0] for item in ASSETS.items()}
+  for future in concurrent.futures.as_completed(futures):
+   a=futures[future]
+   try:
+    _,(p,t,src)=future.result()
+    if not math.isfinite(p) or p<=0 or t>now+60:raise ValueError("cours invalide")
+    fresh[a]=(p,t,src)
+   except Exception as e:errors.append(a+": "+str(e)[:100])
+ history={}
+ eligible=[(a,kind,symbol) for a,(kind,symbol,cur) in ASSETS.items() if kind in ("crypto","etf","stock") and a in fresh and now-fresh[a][1]<600 and (cur=="EUR" or ("EURUSD" in fresh and now-fresh["EURUSD"][1]<600))]
+ def load_history(item):
+  a,kind,symbol=item
+  return a,market_indicators(a,kind,symbol,now)
+ with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+  futures={pool.submit(load_history,item):item[0] for item in eligible}
+  for future in concurrent.futures.as_completed(futures):
+   a=futures[future]
+   try:
+    _,ind=future.result()
+    history[a]=ind
+   except Exception as e:errors.append(a+" history: "+str(e)[:100])
  with db() as c:
   for a,(p,t,src) in fresh.items():
    c.execute("INSERT OR REPLACE INTO quotes VALUES(?,?,?,?)",(a,p,t,src))
    if now-t<600:c.execute("INSERT OR REPLACE INTO samples VALUES(?,?,?)",(now,a,p))
   c.execute("DELETE FROM samples WHERE t<?",(now-86400,))
   s=c.execute("SELECT * FROM state WHERE id=1").fetchone();cash=s["cash"]
-  audit(c,now,"SCAN","",f"{len(fresh)}/{len(ASSETS)} cotations reçues, {len(errors)} erreurs de collecte")
+  audit(c,now,"SCAN","",f"{len(fresh)}/{len(ASSETS)} cotations reçues; {len(history)} historiques récupérés; {len(errors)} erreurs; collecte parallèle")
   fx=fresh.get("EURUSD")
   def eur(a):
    q=fresh.get(a)
@@ -140,9 +159,7 @@ def scan():
    if kind not in ("crypto","etf","stock") or a in pos:continue
    px=eur(a)
    if px is None:continue
-   try:ind=market_indicators(a,kind,ASSETS[a][1],now)
-   except Exception as e:
-    errors.append(a+" history: "+str(e)[:40]);continue
+   ind=history.get(a)
    if ind is None:continue
    trend=.002<ind["momentum"]<.04 and 38<=ind["rsi"]<=70 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0
    reversal=any(p in ind["patterns"] for p in ("bullish_engulfing","hammer")) and 28<=ind["rsi"]<=65 and ind["momentum"]>-.025 and ind["sma20_gap_pct"]>-.8
@@ -176,7 +193,7 @@ def scan():
     c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"BUY",px,amount,0,"Signal technique; stratégie "+ind["entry_setup"]))
     audit(c,now,"BUY",a,f"Achat fictif {amount:.2f} EUR; stratégie={ind['entry_setup']}; prix={px:.6f}; frais={fee*100:.2f}%")
     pos[a]={"asset":a,"qty":qty,"entry":px,"cost":amount}
-  if errors:audit(c,now,"ERROR","", "; ".join(errors[:3]))
+  if errors:audit(c,now,"ERROR","", "; ".join(errors[:6]))
   if equity<=day_start-daily_loss_limit:audit(c,now,"BLOCK","","Coupe-circuit de perte journalière actif")
   c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"; ".join(errors[:6]) if errors else None))
 def snapshot():
