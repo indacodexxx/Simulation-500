@@ -11,6 +11,7 @@ def init():
  with db() as c:
   c.executescript("CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY,cash REAL,last_run INTEGER,error TEXT);CREATE TABLE IF NOT EXISTS quotes(asset TEXT PRIMARY KEY,price REAL,t INTEGER,source TEXT);CREATE TABLE IF NOT EXISTS samples(t INTEGER,asset TEXT,price REAL,PRIMARY KEY(t,asset));CREATE TABLE IF NOT EXISTS positions(asset TEXT PRIMARY KEY,qty REAL,entry REAL,cost REAL);CREATE TABLE IF NOT EXISTS trades(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,asset TEXT,side TEXT,price REAL,amount REAL,pnl REAL,reason TEXT);")
   c.execute("INSERT OR IGNORE INTO state VALUES(1,500,0,'En attente du premier scan')")
+  c.execute("CREATE TABLE IF NOT EXISTS decisions(id INTEGER PRIMARY KEY AUTOINCREMENT,t INTEGER,asset TEXT,indicators TEXT,decision TEXT,reason TEXT)")
 def get(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
  with urllib.request.urlopen(req,timeout=8) as r:return json.load(r)
@@ -22,37 +23,52 @@ def quote(asset,kind,symbol):
   return float(next(iter(d["result"].values()))["c"][0]),int(time.time()),"Kraken"
  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=1d")["chart"]["result"][0]["meta"]
  return float(d["regularMarketPrice"]),int(d["regularMarketTime"]),"Yahoo Finance"
-def historical_momentum(asset,kind,symbol,now):
- # Use actual historical candles, not a one-hour warm-up or invented prices.
+def market_indicators(asset,kind,symbol,now):
  if kind=="crypto":
   pair={"BTC-EUR":"XXBTZEUR","ETH-EUR":"XETHZEUR","SOL-EUR":"SOLEUR"}[asset]
   d=get("https://api.kraken.com/0/public/OHLC?pair="+pair+"&interval=5")
   if d.get("error"):raise ValueError(str(d["error"]))
   candles=next(v for k,v in d["result"].items() if k!="last")
-  points=[(int(x[0]),float(x[4])) for x in candles if int(x[0])<=now-300]
+  points=[(int(x[0]),float(x[4]),float(x[6])) for x in candles if int(x[0])<=now-300]
  else:
-  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=2d")["chart"]["result"][0]
-  timestamps=d.get("timestamp") or []
-  closes=d["indicators"]["quote"][0]["close"]
-  points=[(int(t),float(p)) for t,p in zip(timestamps,closes) if p is not None and math.isfinite(float(p))]
- if len(points)<8:return None
- latest_t,latest=points[-1]
- if now-latest_t>600:return None
- earlier=[(t,p) for t,p in points if now-7800<=t<=now-6000]
- if not earlier:return None
- return latest/earlier[0][1]-1
-def ai_approve(asset,momentum,price):
- # AI is an additional veto, never an authorization for real-money orders.
+  d=get("https://query1.finance.yahoo.com/v8/finance/chart/"+urllib.parse.quote(symbol,safe="")+"?interval=5m&range=5d")["chart"]["result"][0]
+  q=d["indicators"]["quote"][0]
+  points=[(int(t),float(p),float(v or 0)) for t,p,v in zip(d.get("timestamp") or [],q["close"],q.get("volume") or []) if p is not None and math.isfinite(float(p))]
+ if len(points)<55 or now-points[-1][0]>900:return None
+ prices=[p for _,p,_ in points];volumes=[v for _,_,v in points]
+ latest=prices[-1];old=prices[-25]
+ if old<=0:return None
+ gains=[max(prices[i]-prices[i-1],0) for i in range(-14,0)]
+ losses=[max(prices[i-1]-prices[i],0) for i in range(-14,0)]
+ avg_gain=sum(gains)/14;avg_loss=sum(losses)/14
+ rsi=100 if avg_loss==0 else 100-100/(1+avg_gain/avg_loss)
+ def ema(vals,n):
+  out=vals[0];k=2/(n+1)
+  for v in vals[1:]:out=v*k+out*(1-k)
+  return out
+ macd=ema(prices[-60:],12)-ema(prices[-60:],26)
+ returns=[prices[i]/prices[i-1]-1 for i in range(-24,0) if prices[i-1]>0]
+ volatility=math.sqrt(sum((x-sum(returns)/len(returns))**2 for x in returns)/len(returns))*math.sqrt(24) if returns else 0
+ vol_base=sum(volumes[-25:-1])/24
+ volume_ratio=volumes[-1]/vol_base if vol_base>0 else None
+ return {"momentum":latest/old-1,"rsi":round(rsi,2),"macd_pct":round(macd/latest*100,4),"sma20_gap_pct":round((latest/(sum(prices[-20:])/20)-1)*100,3),"volatility_2h_pct":round(volatility*100,3),"volume_ratio":round(volume_ratio,2) if volume_ratio is not None else None,"candles":len(points)}
+
+def ai_approve(asset,indicators,price):
  key=os.getenv("OPENAI_API_KEY","")
  if not key:return False,"OPENAI_API_KEY absente"
- model=os.getenv("OPENAI_MODEL","gpt-6")
- payload={"model":model,"input":[{"role":"system","content":"You are a conservative paper-trading risk reviewer. Answer exactly APPROVE or REJECT. Reject when evidence is insufficient. No real trading."},{"role":"user","content":f"Asset: {asset}; 2-hour momentum: {momentum:.5f}; current EUR price: {price:.6f}. No other market evidence is provided. Should this paper trade be approved?"}],"max_output_tokens":30}
+ model=os.getenv("OPENAI_MODEL","gpt-4.1-mini")
+ payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":2,"take_profit_pct":3.5,"paper_trading":True})}],"max_output_tokens":70}
  req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
  try:
   with urllib.request.urlopen(req,timeout=18) as r:result=json.load(r)
   outputs=[part.get("text","") for item in result.get("output",[]) for part in item.get("content",[]) if part.get("type")=="output_text"]
   answer=" ".join(outputs).strip().upper()
   return answer=="APPROVE",answer[:100] or "reponse vide"
+ except urllib.error.HTTPError as e:
+  detail=e.read(500).decode("utf-8","replace")
+  try:detail=json.loads(detail).get("error",{}).get("message",detail)
+  except Exception:pass
+  return False,"IA HTTP "+str(e.code)+": "+str(detail)[:160]
  except Exception as e:return False,"IA indisponible: "+str(e)[:110]
 
 def scan():
@@ -92,15 +108,17 @@ def scan():
    if kind not in ("crypto","etf","stock") or a in pos:continue
    px=eur(a)
    if px is None:continue
-   try:momentum=historical_momentum(a,kind,ASSETS[a][1],now)
+   try:ind=market_indicators(a,kind,ASSETS[a][1],now)
    except Exception as e:
     errors.append(a+" history: "+str(e)[:40]);continue
-   if momentum is not None and .004<momentum<.04:candidates.append((momentum,a,px))
+   if ind is not None and .004<ind["momentum"]<.04 and 35<=ind["rsi"]<=72 and ind["macd_pct"]>0 and ind["sma20_gap_pct"]>0:candidates.append((ind["momentum"],a,px,ind))
   if len(pos)<3 and cash>=80 and candidates:
-   mom,a,px=max(candidates);amount=min(100,cash*.25);fee=.004 if ASSETS[a][0]=="crypto" else .001
+   mom,a,px,ind=max(candidates);amount=min(100,cash*.25);fee=.004 if ASSETS[a][0]=="crypto" else .001
    # 2% stop + round-trip fees must not exceed 1% of initial 500 EUR.
    if amount*(.02+2*fee)>5:amount=5/(.02+2*fee)
-   approved,decision=ai_approve(a,mom,px)
+   approved,decision=ai_approve(a,ind,px)
+   c.execute("INSERT INTO decisions(t,asset,indicators,decision,reason) VALUES(?,?,?,?,?)",(now,a,json.dumps(ind),"APPROVE" if approved else "REJECT",decision))
+   c.execute("DELETE FROM decisions WHERE id NOT IN (SELECT id FROM decisions ORDER BY id DESC LIMIT 100)")
    if not approved:
     errors.append("AI veto "+a+": "+decision)
     amount=0
@@ -123,9 +141,10 @@ def snapshot():
    return None
   pos=[dict(x) for x in c.execute("SELECT * FROM positions")]
   trades=[dict(x) for x in c.execute("SELECT * FROM trades ORDER BY id DESC LIMIT 100")]
+  decisions=[dict(x) for x in c.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT 20")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-6"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 60 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 60 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
