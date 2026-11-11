@@ -8,6 +8,50 @@ def fee_rate(asset):
  # Mode simulation sans frais, demande explicite de l'utilisateur.
  return 0.0
 
+def realistic_cost_rate(asset):
+ # Hypotheses pedagogiques, pas des tarifs garantis ni des prix bid/ask reels.
+ kind=ASSETS.get(asset,("stock",))[0]
+ if kind=="crypto":return {"commission":0.004,"spread":0.001,"slippage":0.0005}
+ return {"commission":0.001,"spread":0.0005,"slippage":0.0005}
+
+def comparison(c,positions,eur,cash):
+ # Reconstruction des transactions au prix affiche, sans modifier le compte fictif.
+ # Les anciens achats peuvent inclure des frais historiques: approximation signalee.
+ trades=[dict(r) for r in c.execute("SELECT * FROM trades ORDER BY id ASC")]
+ gross_cash=500.0;real_cash=500.0;realized_gross=0.0;realized_real=0.0
+ lots={};costs=0.0;completed=0
+ for t in trades:
+  a=t["asset"];amount=float(t["amount"]);px=float(t["price"])
+  if px<=0 or a not in ASSETS:continue
+  rate=realistic_cost_rate(a);r=sum(rate.values())
+  if t["side"]=="BUY":
+   gross_cash-=amount;real_cash-=amount*(1+r);costs+=amount*r
+   lots[a]=(amount/px,amount,amount*(1+r))
+  elif t["side"]=="SELL":
+   gross_cash+=amount;real_cash+=amount*(1-r);costs+=amount*r
+   if a in lots:
+    qty,principal,real_principal=lots.pop(a)
+    realized_gross+=amount-principal
+    realized_real+=amount*(1-r)-real_principal
+    completed+=1
+ # En cas de redemarrage, la table de positions est la source de verite pour les positions ouvertes.
+ gross_equity=gross_cash;real_equity=real_cash;open_exit_costs=0.0
+ for p in positions:
+  a=p["asset"];px=eur(a) or p["entry"]
+  if a in lots:
+   qty,principal,real_principal=lots[a]
+  else:
+   qty=float(p["qty"]);principal=float(p["cost"]);real_principal=principal*(1+sum(realistic_cost_rate(a).values()))
+  mark=qty*px;exit_cost=mark*sum(realistic_cost_rate(a).values())
+  gross_equity+=mark;real_equity+=mark-exit_cost;open_exit_costs+=exit_cost
+ return {"gross_value":round(gross_equity,4),"gross_pnl":round(gross_equity-500,4),
+  "realistic_value":round(real_equity,4),"realistic_pnl":round(real_equity-500,4),
+  "realistic_costs_paid":round(costs,4),"estimated_open_exit_costs":round(open_exit_costs,4),
+  "completed_round_trips":completed,"realized_gross_pnl":round(realized_gross,4),
+  "realized_realistic_pnl":round(realized_real,4),
+  "assumptions":{"crypto":realistic_cost_rate("BTC-EUR"),"equities_etf":realistic_cost_rate("SPY")},
+  "warning":"Estimation indicative a partir des transactions enregistrees. Pas de carnet d'ordres, bid/ask reel, liquidite ni execution garantie. Les anciennes transactions avec frais historiques et les redemarrages peuvent fausser la reconstruction."}
+
 def db():
  c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;return c
 def init():
@@ -215,8 +259,9 @@ def snapshot():
   decisions=[dict(x) for x in c.execute("SELECT * FROM decisions ORDER BY id DESC LIMIT 20")]
   audit_events=[dict(x) for x in c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
+  performance=comparison(c,pos,eur,s["cash"])
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; zero simulated transaction fees; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement, sans frais de transaction simules. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; zero simulated transaction fees; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"performance_comparison":performance,"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement, sans frais de transaction simules. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
