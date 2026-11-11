@@ -18,11 +18,11 @@ def rpc(method,params):
   except Exception as exc:
    failures.append(url.split("/")[2]+": "+str(exc)[:90])
  raise RuntimeError("All Polygon RPC providers failed: "+" | ".join(failures))
-def scan(c,limit=100):
+def scan(c,limit=250):
  c.execute("CREATE TABLE IF NOT EXISTS polygon_cursor(id INTEGER PRIMARY KEY,block INTEGER)")
  latest=int(rpc("eth_blockNumber",[]),16)
  row=c.execute("SELECT block FROM polygon_cursor WHERE id=1").fetchone()
- start=(row[0]+1) if row else max(0,latest-400)
+ start=(row[0]+1) if row else max(0,latest-5000)
  end=min(latest-8,start+limit-1)
  if end<start:return [],{"latest":latest,"cursor":start-1,"events":0}
  topic="0x"+("0"*24)+WALLET[2:]
