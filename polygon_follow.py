@@ -2,6 +2,7 @@
 import json,urllib.request,os,time,sqlite3
 RPC=os.getenv("POLYGON_RPC","https://polygon-bor-rpc.publicnode.com")
 WALLET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc".lower()
+ORDER_FILLED="0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
 EXCHANGES=["0xE111180000d2663C0091e4f400237545B87B996B","0xe2222d279d744050d28e00520010520000310F59"]
 def rpc(method,params):
  data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
@@ -18,26 +19,20 @@ def scan(c,limit=500):
  topic="0x"+("0"*24)+WALLET[2:]
  events=[]
  for contract in EXCHANGES:
-  for slot in (1,2):
-   topics=[None,None,None]
-   topics[slot]=topic
-   logs=rpc("eth_getLogs",[{"address":contract,"fromBlock":hex(start),"toBlock":hex(end),"topics":topics}])
-   for log in logs:
-    ts=log.get("topics") or []
-    # V2 OrderFilled has orderHash, maker, taker indexed and 8 non-indexed words.
-    if len(ts)!=4 or len(log.get("data","")[2:])!=8*64:continue
-    words=[int(log["data"][2+i*64:2+(i+1)*64],16) for i in range(8)]
-    side,token,maker_amt,taker_amt,fee=words[:5]
-    if side not in (0,1) or token==0 or maker_amt<=0 or taker_amt<=0:continue
-    # Only maker's own fills: the taker topic can be an exchange router.
-    if ts[2].lower()!=topic:continue
-    # V2: BUY maker spends collateral; SELL maker spends outcome shares.
-    collateral=(maker_amt if side==0 else taker_amt)/1e6
-    shares=(taker_amt if side==0 else maker_amt)/1e6
-    if not (collateral>0 and shares>0):continue
-    price=collateral/shares
-    if not 0<price<1:continue
-    events.append({"key":log["transactionHash"]+":"+hex(int(log["logIndex"],16)),"block":int(log["blockNumber"],16),"asset":str(token),"side":"BUY" if side==0 else "SELL","price":price,"notional":collateral,"shares":shares})
+  logs=rpc("eth_getLogs",[{"address":contract,"fromBlock":hex(start),"toBlock":hex(end),"topics":[ORDER_FILLED,None,topic]}])
+  for log in logs:
+   ts=log.get("topics") or []
+   if len(ts)!=4 or ts[0].lower()!=ORDER_FILLED or ts[2].lower()!=topic:continue
+   if len(log.get("data","")[2:])!=7*64:continue
+   words=[int(log["data"][2+i*64:2+(i+1)*64],16) for i in range(7)]
+   side,token,maker_amt,taker_amt,fee=words[:5]
+   if side not in (0,1) or token==0 or maker_amt<=0 or taker_amt<=0:continue
+   collateral=(maker_amt if side==0 else taker_amt)/1e6
+   shares=(taker_amt if side==0 else maker_amt)/1e6
+   if not (collateral>0 and shares>0):continue
+   price=collateral/shares
+   if not 0<price<1:continue
+   events.append({"key":log["transactionHash"]+":"+hex(int(log["logIndex"],16)),"block":int(log["blockNumber"],16),"asset":str(token),"side":"BUY" if side==0 else "SELL","price":price,"notional":collateral,"shares":shares})
  events.sort(key=lambda x:(x["block"],x["key"]))
  c.execute("INSERT INTO polygon_cursor(id,block) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET block=excluded.block",(end,))
  return events,{"latest":latest,"cursor":end,"events":len(events)}
