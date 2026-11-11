@@ -13,19 +13,20 @@ def scan(c):
   c.execute("INSERT INTO activity_cursor VALUES(1,?)",(start,))
  url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":200,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC","start":max(1,start-5)})
  payload=fetch(url)
- if not isinstance(payload,dict) or not isinstance(payload.get("data"),list):
+ rows=payload.get("data") if isinstance(payload,dict) else payload
+ if not isinstance(rows,list):
   raise ValueError("Unexpected Polymarket V2 activity response")
  events=[]
- for a in payload["data"]:
+ for a in rows:
   try:
    timestamp=int(a.get("timestamp") or 0)
    if timestamp<start:continue
    side=str(a.get("side") or "").upper()
-   token=str(a.get("token_id") or "")
+   token=str(a.get("token_id") or a.get("tokenId") or a.get("asset") or "")
    price=float(a.get("price") or 0)
    shares=float(a.get("size") or 0)
-   notional=float(a.get("usdc_size") or shares*price)
-   tx=str(a.get("transaction_hash") or "")
+   notional=float(a.get("usdc_size") or a.get("usdcSize") or shares*price)
+   tx=str(a.get("transaction_hash") or a.get("transactionHash") or "")
    if side not in ("BUY","SELL") or not token or not tx or not 0<price<1 or shares<=0 or notional<=0:continue
    # Stable per-fill fingerprint; identical fills inside same tx are aggregated by design.
    key="v2:"+tx+":"+token+":"+side+":"+str(timestamp)+":"+str(shares)+":"+str(notional)
