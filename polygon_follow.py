@@ -81,5 +81,5 @@ def execute(path,fx=None,preloaded=None):
    c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,"Observed public wallet activity; 5% source notional paper sizing"))
    count+=1
   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
-  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders""))
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders"))
  return {"status":"monitoring","copied":count,"polygon":meta,"cash_eur":round(cash,2)}
