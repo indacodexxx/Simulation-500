@@ -78,8 +78,8 @@ def execute(path,fx=None,preloaded=None):
     cash+=amount
     if pos[0]-qty<1e-8:c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
     else:c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]-qty,pos[1]*(1-qty/pos[0]),fill,asset))
-   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,"Verified Polygon V2 maker fill; 5% source notional paper sizing"))
+   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,"Observed public wallet activity; 5% source notional paper sizing"))
    count+=1
   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
-  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,"Polygon V2 blocks scanned through "+str(meta["cursor"])+"; "+str(count)+" new paper orders"))
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders""))
  return {"status":"monitoring","copied":count,"polygon":meta,"cash_eur":round(cash,2)}
