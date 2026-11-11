@@ -167,13 +167,13 @@ def scan():
    ind["entry_setup"]="trend" if trend else ("reversal" if reversal else ("three_green" if candle_continuation else "none"))
    if trend or reversal or candle_continuation:
     last=c.execute("SELECT MAX(t) FROM trades WHERE asset=? AND side='BUY'",(a,)).fetchone()[0]
-    if last and now-last<300:
-     audit(c,now,"BLOCK",a,"Signal détecté, mais cooldown de 5 minutes")
+    if last and now-last<120:
+     audit(c,now,"BLOCK",a,"Signal détecté, mais cooldown de 2 minutes")
      continue
     candidates.append((ind["momentum"],a,px,ind))
   audit(c,now,"SIGNALS","",f"{len(candidates)} signaux éligibles; "+", ".join(a for _,a,_,_ in candidates[:8]))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
-  daily_loss_limit=max(0,day_start*.03)
+  daily_loss_limit=max(0,day_start*.08)
   if equity<=day_start-daily_loss_limit:
    audit(c,now,"BLOCK","","Coupe-circuit journalier actif: aucune nouvelle position")
   elif not candidates:
@@ -181,11 +181,11 @@ def scan():
   else:
    ranked=sorted(candidates,key=lambda x:(x[3]["entry_setup"]=="trend",x[0]),reverse=True)
    for mom,a,px,ind in ranked:
-    if len(pos)>=5 or cash<30:break
-    amount=min(65,cash*.22)
+    if len(pos)>=10 or cash<20:break
+    amount=min(cash*.35,max(25,equity*.18))
     fee=fee_rate(a)
-    if amount*(.012+2*fee)>3:amount=3/(.012+2*fee)
-    if amount<15:continue
+    if amount*(.012+2*fee)>5:amount=5/(.012+2*fee)
+    if amount<12:continue
     audit(c,now,"SIGNAL",a,f"Signal technique accepté sans contrôle IA; setup={ind['entry_setup']}; patterns={ind['patterns']}")
     qty=amount*(1-fee)/px
     cash-=amount
@@ -215,7 +215,7 @@ def snapshot():
   audit_events=[dict(x) for x in c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; conservative taker-fee model; no hourly trade cap; up to 5 positions; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; conservative taker-fee model; aggressive paper mode; no hourly trade cap; up to 10 positions; 2 min cooldown; 8% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":8,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 15 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
@@ -233,6 +233,6 @@ def worker():
    with db() as c:
     audit(c,int(time.time()),"ERROR","ENGINE","Erreur moteur: "+traceback.format_exc()[-650:])
     c.execute("UPDATE state SET error=? WHERE id=1",("Erreur moteur: "+str(e)[:150],))
-  time.sleep(30)
+  time.sleep(15)
 if __name__=="__main__":
  init();threading.Thread(target=worker,daemon=True).start();ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
