@@ -111,6 +111,22 @@ def run(path):
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polygon follower error: "+str(exc)[:180]))
   return {"error":str(exc)[:180]}
+def selftest():
+ """Execute one deterministic paper BUY in a disposable database, never the live portfolio."""
+ from unittest.mock import patch
+ event={"key":"selftest:synthetic:1","block":1,"asset":"123456789","side":"BUY","price":0.5,"notional":200.0,"shares":400.0}
+ with tempfile.TemporaryDirectory(prefix="simulation500-test-") as directory:
+  path=os.path.join(directory,"isolated.sqlite")
+  init(path)
+  with patch.object(polygon_follow,"scan",return_value=([event],{"latest":1,"cursor":1,"events":1})):
+   first=polygon_follow.execute(path,fx=1.1)
+   second=polygon_follow.execute(path,fx=1.1)
+  with sqlite3.connect(path) as c:
+   cash=c.execute("SELECT cash FROM copy_state WHERE id=1").fetchone()[0]
+   count=c.execute("SELECT COUNT(*) FROM copy_trades").fetchone()[0]
+   positions=c.execute("SELECT COUNT(*) FROM copy_positions").fetchone()[0]
+  passed=(first["copied"]==1 and second["copied"]==0 and count==1 and positions==1 and abs(cash-(500-200*.05/1.1))<.001)
+  return {"passed":passed,"mode":"isolated_synthetic_test","source":"synthetic, NOT a Polymarket wallet trade","first":first,"second":second,"trade_count":count,"positions":positions,"remaining_cash_eur":round(cash,2),"live_portfolio_modified":False}
 def diagnostics():
  """Independent upstream checks, safe for read-only API health endpoint."""
  out={"target":TARGET,"checked_at":int(time.time()),"paper_only":True}
