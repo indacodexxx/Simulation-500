@@ -163,11 +163,13 @@ def report(path):
   trades=c.execute("SELECT t,market,side,target_price,paper_price,shares,spent,reason FROM copy_trades ORDER BY id DESC LIMIT 40").fetchall()
   health=c.execute("SELECT checked,events,latest,candidates,copied,reason FROM copy_health WHERE id=1").fetchone()
   skipped=c.execute("SELECT t,asset,side,reason FROM copy_skipped ORDER BY t DESC LIMIT 40").fetchall() if c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='copy_skipped'").fetchone() else []
+  polls=[dict(zip(("checked_at","source_feed_events","eligible_after_cursor","copied","skipped","duplicates","before_cursor","invalid_fields","invalid_timestamp","latest_eligible_source_trade"),r)) for r in c.execute("SELECT checked,raw_events,eligible,copied,skipped,duplicates,before_cursor,invalid_fields,invalid_timestamp,source_latest FROM copy_poll_audit ORDER BY id DESC LIMIT 10")] if c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='copy_poll_audit'").fetchone() else []
  cash,last_seen,started,error=state
  return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"Polymarket V2 wallet activity: 5% of observed fill notional, capped at 50 EUR per order; simulated spread and fee","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
  "skipped_source_trades":[{"timestamp":x[0],"asset":x[1],"side":x[2],"reason":x[3]} for x in skipped],
+ "recent_poll_audit":polls,
  "last_target_trade":last_seen or None,"started":started,"error":error,"execution_enabled":False,"real_money_execution_enabled":False,"paper_execution_enabled":True,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
  "warning":"Public Polymarket V2 wallet activity feed; newly observed trades only. 5% of source trade notional, not exact portfolio mirroring. FX, paper slippage and fees approximate. Render SQLite storage is ephemeral; not ready for real-money trading."}
