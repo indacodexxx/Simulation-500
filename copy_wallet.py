@@ -26,7 +26,7 @@ def usd_per_eur():
  return float(next(iter(d["result"].values()))["c"][0])
 def open_positions():
  """Fetch public open positions; reject unknown response shapes rather than inventing positions."""
- url="https://data-api.polymarket.com/positions?"+urllib.parse.urlencode({"user":TARGET,"limit":500,"sizeThreshold":0})
+ url="https://data-api.polymarket.com/v2/positions?"+urllib.parse.urlencode({"user":TARGET,"limit":500,"status":"OPEN"})
  payload=fetch(url)
  rows=payload.get("data") if isinstance(payload,dict) else payload
  if isinstance(rows,dict):rows=rows.get("positions")
@@ -38,7 +38,7 @@ def open_positions():
   shares=float(p.get("current_size") or p.get("size") or 0)
   price=float(p.get("current_price") or p.get("curPrice") or p.get("price") or 0)
   value=float(p.get("current_value") or p.get("currentValue") or shares*price)
-  if asset and shares>0 and 0.02<=price<=0.98 and value>0:
+  if asset and shares>0 and 0<price<1 and value>0:
    positions.append((str(asset),str(p.get("title") or p.get("slug") or p.get("conditionId") or ""),shares,price,value))
  return positions
 def bootstrap(path,now):
@@ -124,7 +124,7 @@ def run(path):
    copied+=1
   c.execute("UPDATE copy_state SET cash=?,error=NULL WHERE id=1",(cash,))
   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",
-   (now,len(positions),0,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "Snapshot checked; no eligible positions" if not positions else "Snapshot checked; no change in top five positions"))
+   (now,len(positions),0,len(selected),copied,"Snapshot reconciled: "+str(copied)+" paper orders" if copied else "No OPEN positions returned by Polymarket v2; no paper trades created" if not positions else "Snapshot checked; no change in top five positions"))
  return {"status":"monitoring","copied":copied,"source_open_positions":len(positions),"cash_eur":round(cash,2)}
 def report(path):
  with LOCK,sqlite3.connect(path,timeout=15) as c:
