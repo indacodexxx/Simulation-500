@@ -56,13 +56,13 @@ def execute(path,fx=None,preloaded=None):
   count=0
   for ev in events:
    if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(ev["key"],)).fetchone():continue
-   asset=ev["asset"];market="Polygon V2 token "+asset[:20]
+   asset=ev["asset"];market="Polymarket token "+asset[:20]
    pos=c.execute("SELECT shares,cost,last_price FROM copy_positions WHERE asset=?",(asset,)).fetchone()
    px=ev["price"]
    # Fixed 5% of observed source fill, capped at 10% initial paper bankroll.
    amount=min(cash,50.0,ev["notional"]*.05/fx)
    if ev["side"]=="BUY":
-    if amount<1:continue
+    if amount<0.10:continue
     fill=min(.99,px+.02);qty=amount*fx/(fill+.01)
     if pos:
      c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]+qty,pos[1]+amount,fill,asset))
@@ -78,7 +78,7 @@ def execute(path,fx=None,preloaded=None):
     cash+=amount
     if pos[0]-qty<1e-8:c.execute("DELETE FROM copy_positions WHERE asset=?",(asset,))
     else:c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]-qty,pos[1]*(1-qty/pos[0]),fill,asset))
-   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,"Observed public wallet activity; 5% source notional paper sizing"))
+   c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,("Historical source trade (24h backfill); simulated later" if meta.get("historical") else "Live observed source trade; paper execution")))
    count+=1
   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
   c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders"))
