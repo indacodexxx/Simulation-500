@@ -62,6 +62,16 @@ def scan():
    if cur=="EUR":return q[0]
    if cur=="USD" and fx and now-fx[1]<600 and fx[0]>0:return q[0]/fx[0]
    return None
+  # Immediate, explicitly labeled paper-trade execution test: one buy and one sell.
+  # Execute only against a fresh actual EUR quote, and only once per database.
+  already=c.execute("SELECT 1 FROM trades WHERE reason LIKE 'TEST EXECUTION%' LIMIT 1").fetchone()
+  if not already and "BTC-EUR" in fresh and now-fresh["BTC-EUR"][1]<120 and cash>=100:
+   px=fresh["BTC-EUR"][0];amount=50.0;fee=.004
+   qty=amount*(1-fee)/px
+   proceeds=qty*px*(1-fee)
+   cash=cash-amount+proceeds
+   c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,"BTC-EUR","BUY",px,amount,0,"TEST EXECUTION - achat fictif au cours Kraken"))
+   c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,"BTC-EUR","SELL",px,proceeds,proceeds-amount,"TEST EXECUTION - vente fictive immediate, frais simules"))
   pos={r["asset"]:dict(r) for r in c.execute("SELECT * FROM positions")}
   for a,p in list(pos.items()):
    px=eur(a)
