@@ -114,21 +114,27 @@ def run(path):
    c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polymarket activity follower error: "+str(exc)[:180]))
   return {"error":str(exc)[:180]}
 def selftest():
- """Execute one deterministic paper BUY in a disposable database, never the live portfolio."""
+ """Isolated BUY/SELL, deduplication and balance checks. Never modifies live DB."""
  from unittest.mock import patch
- event={"key":"selftest:synthetic:1","block":1,"asset":"123456789","side":"BUY","price":0.5,"notional":200.0,"shares":400.0}
+ buy={"key":"selftest:buy","block":1,"asset":"123456789","side":"BUY","price":0.5,"notional":200.0,"shares":400.0}
+ sell={"key":"selftest:sell","block":2,"asset":"123456789","side":"SELL","price":0.6,"notional":120.0,"shares":200.0}
  with tempfile.TemporaryDirectory(prefix="simulation500-test-") as directory:
   path=os.path.join(directory,"isolated.sqlite")
   init(path)
-  with patch.object(polygon_follow,"scan",return_value=([event],{"latest":1,"cursor":1,"events":1})):
-   first=polygon_follow.execute(path,fx=1.1)
-   second=polygon_follow.execute(path,fx=1.1)
+  meta={"latest":2,"cursor":2,"events":2,"raw_events":2,"filtered":{}}
+  first=polygon_follow.execute(path,fx=1.1,preloaded=([buy,sell],meta))
+  second=polygon_follow.execute(path,fx=1.1,preloaded=([buy,sell],meta))
   with sqlite3.connect(path) as c:
    cash=c.execute("SELECT cash FROM copy_state WHERE id=1").fetchone()[0]
-   count=c.execute("SELECT COUNT(*) FROM copy_trades").fetchone()[0]
-   positions=c.execute("SELECT COUNT(*) FROM copy_positions").fetchone()[0]
-  passed=(first["copied"]==1 and second["copied"]==0 and count==1 and positions==1 and abs(cash-(500-200*.05/1.1))<.001)
-  return {"passed":passed,"mode":"isolated_synthetic_test","source":"synthetic, NOT a Polymarket wallet trade","first":first,"second":second,"trade_count":count,"positions":positions,"remaining_cash_eur":round(cash,2),"live_portfolio_modified":False}
+   trades=c.execute("SELECT side FROM copy_trades ORDER BY id").fetchall()
+   positions=c.execute("SELECT shares FROM copy_positions").fetchall()
+   audits=c.execute("SELECT copied,duplicates FROM copy_poll_audit ORDER BY id").fetchall()
+  expected_buy=200*.05/1.1
+  buy_shares=expected_buy*1.1/(.52+.01)
+  sell_shares=min(buy_shares,200*.05)
+  expected_cash=500-expected_buy+sell_shares*(.6-.02-.01)/1.1
+  passed=(first["copied"]==2 and second["copied"]==0 and [t[0] for t in trades]==["BUY","SELL"] and len(positions)==1 and abs(positions[0][0]-(buy_shares-sell_shares))<1e-8 and abs(cash-expected_cash)<1e-7 and audits==[(2,0),(0,2)])
+  return {"passed":passed,"mode":"isolated_synthetic_test","source":"synthetic, NOT a Polymarket wallet trade","buy_and_sell_copied":first["copied"],"replayed_copies":second["copied"],"trade_count":len(trades),"positions":len(positions),"remaining_cash_eur":round(cash,2),"live_portfolio_modified":False}
 def diagnostics():
  """Independent upstream checks, safe for read-only API health endpoint."""
  out={"target":TARGET,"checked_at":int(time.time()),"paper_only":True}
