@@ -96,8 +96,14 @@ def init(path):
 def run(path):
  now=int(time.time())
  try:
-  fx=usd_per_eur()
-  return polygon_follow.execute(path,fx)
+  try:
+   fx=usd_per_eur()
+  except Exception as fx_exc:
+   raise RuntimeError("FX Kraken EUR/USD: "+str(fx_exc)) from fx_exc
+  try:
+   return polygon_follow.execute(path,fx)
+  except Exception as chain_exc:
+   raise RuntimeError("Polygon RPC "+polygon_follow.RPC+": "+str(chain_exc)) from chain_exc
  except Exception as exc:
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
