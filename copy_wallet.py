@@ -9,14 +9,15 @@ def fetch(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Simulation500-PaperCopy/1.0","Accept":"application/json"})
  with urllib.request.urlopen(req,timeout=12) as r:return json.load(r)
 def activity(limit=100):
- url="https://data-api.polymarket.com/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":limit,"type":"TRADE","sortBy":"TIMESTAMP","sortDirection":"DESC"})
- data=fetch(url)
- if not isinstance(data,list):raise ValueError("Unexpected activity payload")
- return data
+ url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":limit,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"})
+ payload=fetch(url)
+ if not isinstance(payload,dict) or not isinstance(payload.get("data"),list):raise ValueError("Unexpected Data API v2 activity envelope")
+ return payload["data"]
 def target_exposure_value():
- data=fetch("https://data-api.polymarket.com/value?"+urllib.parse.urlencode({"user":TARGET}))
- if not isinstance(data,list):raise ValueError("Target position value unavailable")
- value=sum(float(x.get("value") or 0) for x in data)
+ payload=fetch("https://data-api.polymarket.com/v2/value?"+urllib.parse.urlencode({"user":TARGET}))
+ data=payload.get("data") if isinstance(payload,dict) else None
+ if not isinstance(data,dict):raise ValueError("Target position value unavailable")
+ value=float(data.get("value") or 0)
  if value<=0:raise ValueError("Target open-position value is zero; cannot size proportional trades")
  return value
 def usd_per_eur():
@@ -45,7 +46,7 @@ def run(path):
   state=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
   cash,last_seen,started=state
   if not started:cash=500
-  valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and e.get("asset")]
+  valid=[e for e in events if str(e.get("side","")).upper() in ("BUY","SELL") and e.get("timestamp") and (e.get("token_id") or e.get("asset"))]
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
    c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=0,copied=0,reason=? WHERE id=1",(now,len(valid),latest,"First poll: historical trades excluded"))
@@ -63,10 +64,10 @@ def run(path):
     c.execute("UPDATE copy_state SET error=? WHERE id=1",(("Sizing unavailable: "+str(exc))[:250],))
     return {"error":"Sizing unavailable: "+str(exc)[:180]}
   for e in new:
-   side=str(e["side"]).upper();asset=str(e["asset"]);t=int(e["timestamp"]);market=str(e.get("title") or e.get("slug") or e.get("conditionId") or "")
+   side=str(e["side"]).upper();asset=str(e.get("token_id") or e.get("asset"));t=int(e["timestamp"]);market=str(e.get("title") or e.get("slug") or e.get("condition_id") or e.get("conditionId") or "")
    price=float(e.get("price") or 0);target_size=float(e.get("size") or 0)
    if not 0.02<=price<=0.98 or target_size<=0:continue
-   key=":".join(str(e.get(k) or "") for k in ("transactionHash","asset","side","timestamp","price","size"))
+   key=":".join(str(v) for v in (e.get("transaction_hash") or e.get("transactionHash") or "",asset,side,t,price,target_size))
    if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(key,)).fetchone():continue
    p=c.execute("SELECT shares,cost,last_price FROM copy_positions WHERE asset=?",(asset,)).fetchone()
    if side=="BUY":
