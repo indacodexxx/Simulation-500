@@ -1,0 +1,19 @@
+name: Polygon follower tests
+on:
+  push:
+    paths:
+      - 'polygon_follow.py'
+      - 'copy_wallet.py'
+      - 'test_polygon_follow.py'
+      - '.github/workflows/polygon-tests.yml'
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m unittest -v test_polygon_follow
+      - run: python -m py_compile polygon_follow.py copy_wallet.py app.py
