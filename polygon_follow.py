@@ -1,14 +1,23 @@
 """Read-only Polygon V2 exchange fill follower. No real trading."""
 import json,urllib.request,os,time,sqlite3
 RPC=os.getenv("POLYGON_RPC","https://polygon-bor-rpc.publicnode.com")
+RPC_URLS=list(dict.fromkeys([u.strip() for u in (os.getenv("POLYGON_RPC_URLS","").split(",")+[RPC,"https://polygon-rpc.com","https://polygon.drpc.org","https://polygon.llamarpc.com"]) if u.strip()]))
 WALLET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc".lower()
 ORDER_FILLED="0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee"
 EXCHANGES=["0xE111180000d2663C0091e4f400237545B87B996B","0xe2222d279d744050d28e00520010520000310F59"]
 def rpc(method,params):
  data=json.dumps({"jsonrpc":"2.0","id":1,"method":method,"params":params}).encode()
- with urllib.request.urlopen(urllib.request.Request(RPC,data=data,headers={"Content-Type":"application/json"}),timeout=18) as r:out=json.load(r)
- if out.get("error"):raise RuntimeError(str(out["error"])[:180])
- return out["result"]
+ failures=[]
+ for url in RPC_URLS:
+  try:
+   req=urllib.request.Request(url,data=data,headers={"Content-Type":"application/json","Accept":"application/json","User-Agent":"Simulation500-Paper/1.0"})
+   with urllib.request.urlopen(req,timeout=8) as r:out=json.load(r)
+   if out.get("error"):raise RuntimeError(str(out["error"])[:120])
+   if "result" not in out:raise ValueError("Missing JSON-RPC result")
+   return out["result"]
+  except Exception as exc:
+   failures.append(url.split("/")[2]+": "+str(exc)[:90])
+ raise RuntimeError("All Polygon RPC providers failed: "+" | ".join(failures))
 def scan(c,limit=500):
  c.execute("CREATE TABLE IF NOT EXISTS polygon_cursor(id INTEGER PRIMARY KEY,block INTEGER)")
  latest=int(rpc("eth_blockNumber",[]),16)
