@@ -1,0 +1,17 @@
+name: Research quality checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Syntax validation
+        run: python -m py_compile app.py research.py test_research.py
+      - name: Backtest regression tests
+        run: python -m unittest -v test_research
