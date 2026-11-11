@@ -4,6 +4,7 @@ No keys, wallets, on-chain transactions or real orders.
 """
 import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error,tempfile,os
 import polygon_follow
+import activity_follow
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 LOCK=threading.Lock()
 POLYGON_RPC="https://polygon-bor-rpc.publicnode.com"
@@ -105,7 +106,7 @@ def init(path):
 def run(path):
  now=int(time.time())
  try:
-  return polygon_follow.execute(path)
+  return activity_follow.execute(path)
  except Exception as exc:
   print("SIM500_COPY_ERROR:",repr(exc),flush=True)
   with LOCK,sqlite3.connect(path,timeout=15) as c:
