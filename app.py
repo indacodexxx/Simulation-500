@@ -2,6 +2,7 @@ import os,time,json,threading,urllib.request,urllib.parse,sqlite3,math,traceback
 import research
 import microstructure
 import polymarket_research
+import poly_lag
 from datetime import datetime,timezone
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -315,6 +316,7 @@ class Handler(BaseHTTPRequestHandler):
   elif self.path.split("?")[0]=="/api/microstructure/report":body=json.dumps(microstructure.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/polymarket":body=json.dumps(polymarket_research.observe()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/polymarket/report":body=json.dumps(polymarket_research.report(DB)).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/polymarket/lag":body=json.dumps(poly_lag.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
@@ -334,12 +336,14 @@ def book_worker():
   time.sleep(60)
 def poly_worker():
  while True:
-  try:polymarket_research.collect(DB)
+  try:
+   result=polymarket_research.collect(DB)
+   poly_lag.collect(DB,result,polymarket_research.get)
   except Exception as exc:
    with db() as c:audit(c,int(time.time()),"ERROR","POLYMARKET",str(exc)[:180])
   time.sleep(120)
 if __name__=="__main__":
- init();microstructure.init(DB);polymarket_research.init(DB)
+ init();microstructure.init(DB);polymarket_research.init(DB);poly_lag.init(DB)
  threading.Thread(target=worker,daemon=True).start()
  threading.Thread(target=book_worker,daemon=True).start()
  threading.Thread(target=poly_worker,daemon=True).start()
