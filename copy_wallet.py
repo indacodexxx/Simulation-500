@@ -2,12 +2,17 @@
 Trades are copied from the public Data API with a 500 EUR independent ledger.
 No keys, wallets, on-chain transactions or real orders.
 """
-import json,time,sqlite3,threading,urllib.request,urllib.parse
+import json,time,sqlite3,threading,urllib.request,urllib.parse,urllib.error
 TARGET="0xcE25E214D5cfE4f459cf67F08DF581885AAE7Fdc"
 LOCK=threading.Lock()
 def fetch(url):
  req=urllib.request.Request(url,headers={"User-Agent":"Simulation500-PaperCopy/1.0","Accept":"application/json"})
- with urllib.request.urlopen(req,timeout=12) as r:return json.load(r)
+ try:
+  with urllib.request.urlopen(req,timeout=12) as r:return json.load(r)
+ except urllib.error.HTTPError as e:
+  try: detail=e.read(350).decode("utf-8","replace")
+  except Exception:detail=""
+  raise RuntimeError("HTTP "+str(e.code)+" from "+urllib.parse.urlsplit(url).netloc+urllib.parse.urlsplit(url).path+"; "+detail[:180]) from e
 def activity(limit=100):
  url="https://data-api.polymarket.com/v2/activity?"+urllib.parse.urlencode({"user":TARGET,"limit":limit,"type":"TRADE","sort_by":"TIMESTAMP","sort_direction":"DESC"})
  payload=fetch(url)
