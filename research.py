@@ -21,11 +21,11 @@ def signal(closes,strategy):
  if strategy=="ema_trend":return int(ema(closes[-50:],10)>ema(closes[-50:],30) and p>ema(closes[-50:],20))
  return 0
 
-def simulate(bars,strategy,commission,spread,slippage):
+def simulate(bars,strategy,commission,spread,slippage,start_index=55):
  # Signal calcule a la cloture de t, execution seulement a l'ouverture de t+1.
  cash=500.;qty=0.;entry=0.;peak=500.;maxdd=0.;wins=0;losses=0;trades=0;fees=0.
  cost=commission+spread/2+slippage
- for i in range(55,len(bars)-1):
+ for i in range(max(55,start_index),len(bars)-1):
   closes=[b["close"] for b in bars[:i+1]]
   desire=signal(closes,strategy)
   next_open=bars[i+1]["open"]
@@ -44,7 +44,7 @@ def simulate(bars,strategy,commission,spread,slippage):
  "estimated_costs_eur":round(fees,2)}
 
 def run(bars,asset_type):
- if len(bars)<240:raise ValueError("Au moins 240 bougies sont necessaires")
+ if len(bars)<300:raise ValueError("Au moins 300 bougies sont necessaires")
  costs={"crypto":(.004,.001,.0005),"equity":(.001,.0005,.0005)}
  if asset_type not in costs:raise ValueError("Type d'actif invalide")
  n=len(bars);cut=int(n*.7)
@@ -54,8 +54,8 @@ def run(bars,asset_type):
  # Choix uniquement sur la periode d'entrainement.
  chosen=max(train,key=lambda x:(x["return_pct"],-x["max_drawdown_pct"]))["strategy"]
  # Ajout du contexte pre-test pour initialiser les indicateurs sans le trader.
- context=bars[max(0,cut-55):cut]
- test=[simulate(context+bars[cut:],x,c,s,l) for x in STRATEGIES]
+ # Use prior history only for indicator warmup; start trading at test boundary.
+ test=[simulate(bars,x,c,s,l,start_index=cut-1) for x in STRATEGIES]
  buyhold=500*bars[-1]["close"]/bars[cut]["open"]*(1-(c+s/2+l))**2
  return {"status":"research_only","candles":n,"split":{"train_candles":cut,"test_candles":n-cut},
  "cost_model":{"commission_per_side":c,"spread_full":s,"slippage_per_side":l},
