@@ -156,17 +156,14 @@ def scan():
   audit(c,now,"SIGNALS","",f"{len(candidates)} signaux éligibles; "+", ".join(a for _,a,_,_ in candidates[:8]))
   equity=cash+sum(p["qty"]*(eur(a) or p["entry"]) for a,p in pos.items())
   daily_loss_limit=max(0,day_start*.03)
-  recent_trades=c.execute("SELECT COUNT(*) FROM trades WHERE side='BUY' AND t>?",(now-3600,)).fetchone()[0]
   if equity<=day_start-daily_loss_limit:
    audit(c,now,"BLOCK","","Coupe-circuit journalier actif: aucune nouvelle position")
-  elif recent_trades>=12:
-   audit(c,now,"BLOCK","","Limite de 12 achats sur une heure atteinte")
   elif not candidates:
    audit(c,now,"BLOCK","","Aucun signal exploitable sur les données disponibles")
   else:
    ranked=sorted(candidates,key=lambda x:(x[3]["entry_setup"]=="trend",x[0]),reverse=True)
    for mom,a,px,ind in ranked:
-    if len(pos)>=5 or recent_trades>=12 or cash<30:break
+    if len(pos)>=5 or cash<30:break
     amount=min(65,cash*.22)
     fee=fee_rate(a)
     if amount*(.012+2*fee)>3:amount=3/(.012+2*fee)
@@ -184,7 +181,6 @@ def scan():
     c.execute("INSERT INTO trades(t,asset,side,price,amount,pnl,reason) VALUES(?,?,?,?,?,?,?)",(now,a,"BUY",px,amount,0,"IA validée; stratégie "+ind["entry_setup"]))
     audit(c,now,"BUY",a,f"Achat fictif {amount:.2f} EUR; stratégie={ind['entry_setup']}; prix={px:.6f}; frais={fee*100:.2f}%")
     pos[a]={"asset":a,"qty":qty,"entry":px,"cost":amount}
-    recent_trades+=1
   if errors:audit(c,now,"ERROR","", "; ".join(errors[:3]))
   if equity<=day_start-daily_loss_limit:audit(c,now,"BLOCK","","Coupe-circuit de perte journalière actif")
   c.execute("UPDATE state SET cash=?,last_run=?,error=? WHERE id=1",(cash,now,"; ".join(errors[:6]) if errors else None))
@@ -207,7 +203,7 @@ def snapshot():
   audit_events=[dict(x) for x in c.execute("SELECT * FROM audit ORDER BY id DESC LIMIT 150")]
   total=s["cash"]+sum(p["qty"]*(eur(p["asset"]) or p["entry"]) for p in pos)
   for x in quotes:x["fresh"]=now-x["t"]<600;x["eur_price"]=eur(x["asset"])
-  return {"strategy":"paper trading; conservative taker-fee model; max 12 buys/hour; up to 5 positions; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
+  return {"strategy":"paper trading; conservative taker-fee model; no hourly trade cap; up to 5 positions; 5 min cooldown; 3% daily circuit breaker","fee_model":{"crypto_taker_per_side":fee_rate("BTC-EUR"),"equity_sim_per_side":fee_rate("SPY")}, "daily_circuit_breaker_pct":3,"cash":s["cash"],"value":total,"pnl":total-500,"last_run":s["last_run"],"error":s["error"],"quotes":quotes,"positions":pos,"trades":trades,"decisions":decisions,"audit":audit_events,"ai_configured":bool(os.getenv("OPENAI_API_KEY")),"ai_model":os.getenv("OPENAI_MODEL","gpt-4.1-mini"),"simulation_only":True,"markets_total":len(ASSETS),"markets_fresh":sum(x["fresh"] for x in quotes),"engine_recent":bool(s["last_run"] and now-s["last_run"]<900),"last_scan_age_seconds":now-s["last_run"] if s["last_run"] else None,"note":"Simulation uniquement. Les cours Yahoo peuvent etre differes. Analyse relancee 30 secondes apres chaque scan complet. Render gratuit: veille et stockage ephemere; aucune garantie 24/7 ni de conservation des trades."}
 HTML=Path(__file__).with_name("index.html").read_bytes()
 class Handler(BaseHTTPRequestHandler):
  def do_HEAD(self):
