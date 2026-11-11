@@ -53,7 +53,9 @@ def execute(path,fx=None,preloaded=None):
    from copy_wallet import usd_per_eur
    fx=usd_per_eur()
   cash,_,started=c.execute("SELECT cash,last_seen,started FROM copy_state WHERE id=1").fetchone()
+  c.execute("CREATE TABLE IF NOT EXISTS copy_skipped (trade_key TEXT PRIMARY KEY, t INTEGER, asset TEXT, side TEXT, reason TEXT)")
   count=0
+  skipped=0
   for ev in events:
    if c.execute("SELECT 1 FROM copy_trades WHERE trade_key=?",(ev["key"],)).fetchone():continue
    asset=ev["asset"];market="Polymarket token "+asset[:20]
@@ -62,17 +64,26 @@ def execute(path,fx=None,preloaded=None):
    # Fixed 5% of observed source fill, capped at 10% initial paper bankroll.
    amount=min(cash,50.0,ev["notional"]*.05/fx)
    if ev["side"]=="BUY":
-    if amount<0.10:continue
+    if amount<0.10:
+     c.execute("INSERT OR IGNORE INTO copy_skipped VALUES(?,?,?,?,?)",(ev["key"],now,asset,"BUY","Source trade below EUR 0.10 paper minimum"))
+     skipped+=1
+     continue
     fill=min(.99,px+.02);qty=amount*fx/(fill+.01)
     if pos:
      c.execute("UPDATE copy_positions SET shares=?,cost=?,last_price=? WHERE asset=?",(pos[0]+qty,pos[1]+amount,fill,asset))
     else:c.execute("INSERT INTO copy_positions VALUES(?,?,?,?,?)",(asset,market,qty,amount,fill))
     cash-=amount
    else:
-    if not pos:continue
+    if not pos:
+     c.execute("INSERT OR IGNORE INTO copy_skipped VALUES(?,?,?,?,?)",(ev["key"],now,asset,"SELL","No matching paper position; cannot sell shares never bought"))
+     skipped+=1
+     continue
     # Proportional sale; never sell more shares than owned.
     qty=min(pos[0],ev["shares"]*.05)
-    if qty<=0:continue
+    if qty<=0:
+     c.execute("INSERT OR IGNORE INTO copy_skipped VALUES(?,?,?,?,?)",(ev["key"],now,asset,"SELL","No sellable paper shares"))
+     skipped+=1
+     continue
     fill=max(.001,px-.02)
     amount=max(0,qty*max(.001,fill-.01)/fx)
     cash+=amount
@@ -81,5 +92,5 @@ def execute(path,fx=None,preloaded=None):
    c.execute("INSERT INTO copy_trades(trade_key,t,market,asset,side,target_price,paper_price,shares,spent,reason) VALUES(?,?,?,?,?,?,?,?,?,?)",(ev["key"],now,market,asset,ev["side"],px,fill,qty,amount,("Historical source trade (24h backfill); simulated later" if meta.get("historical") else "Live observed source trade; paper execution")))
    count+=1
   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,started or now,now))
-  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders"))
+  c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=?,copied=?,reason=? WHERE id=1",(now,meta["events"],meta["latest"],len(events),count,str(meta.get("source","Polygon V2"))+" checked; "+str(count)+" new paper orders; "+str(skipped)+" skipped"))
  return {"status":"monitoring","copied":count,"polygon":meta,"cash_eur":round(cash,2)}
