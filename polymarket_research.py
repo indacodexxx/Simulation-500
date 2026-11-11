@@ -29,7 +29,7 @@ def best_ask(token):
  book=get("https://clob.polymarket.com/book?"+urllib.parse.urlencode({"token_id":token}))
  asks=[(float(x["price"]),float(x["size"])) for x in book.get("asks",[]) if float(x["size"])>0]
  bids=[(float(x["price"]),float(x["size"])) for x in book.get("bids",[]) if float(x["size"])>0]
- return {"ask":min(asks)[0] if asks else None,"bid":max(bids)[0] if bids else None}
+ return {"ask":min(asks)[0] if asks else None,"bid":max(bids)[0] if bids else None,"ask_size":min(asks)[1] if asks else 0}
 def observe():
  now=int(time.time());markets=[];errors=[]
  try:found=discover()
