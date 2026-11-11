@@ -12,6 +12,6 @@ jobs:
         with:
           python-version: '3.12'
       - name: Syntax validation
-        run: python -m py_compile app.py research.py test_research.py
+        run: python -m py_compile app.py research.py microstructure.py test_research.py test_microstructure.py
       - name: Backtest regression tests
-        run: python -m unittest -v test_research
+        run: python -m unittest -v test_research test_microstructure
