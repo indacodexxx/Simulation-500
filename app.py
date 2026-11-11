@@ -80,13 +80,14 @@ def ai_approve(asset,indicators,price):
  key=os.getenv("OPENAI_API_KEY","")
  if not key:return False,"OPENAI_API_KEY absente"
  model=os.getenv("OPENAI_MODEL","gpt-4.1-mini")
- payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators and actual candlestick patterns, not hypothetical news or fabricated evidence. Return exactly APPROVE or REJECT. Approve only when momentum, trend and RSI jointly support a reasonable entry; reject contradictory, overbought, or excessively volatile setups. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":round(max(.018,2*fee_rate(asset)+.014)*100,2),"fee_per_side_pct":round(fee_rate(asset)*100,2),"paper_trading":True})}],"max_output_tokens":70}
+ payload={"model":model,"input":[{"role":"system","content":"You are a risk reviewer for simulated trading ONLY. Evaluate the supplied indicators and actual candlestick patterns, not hypothetical news or fabricated evidence. Return one line formatted APPROVE: short reason or REJECT: short reason. The entry_setup can be trend, reversal, or three_green. A trend setup does not require a named candlestick pattern. Evaluate momentum, RSI, MACD, SMA20, volatility, fees, and pattern only when relevant. Reject contradictory or overbought signals, or risk/reward unlikely to cover trading costs. Do not invent data. No real orders."},{"role":"user","content":json.dumps({"asset":asset,"price_eur":round(price,6),"timeframe":"5-minute candles","indicators":indicators,"stop_loss_pct":1.2,"take_profit_pct":round(max(.018,2*fee_rate(asset)+.014)*100,2),"fee_per_side_pct":round(fee_rate(asset)*100,2),"paper_trading":True})}],"max_output_tokens":70}
  req=urllib.request.Request("https://api.openai.com/v1/responses",data=json.dumps(payload).encode(),headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"},method="POST")
  try:
   with urllib.request.urlopen(req,timeout=18) as r:result=json.load(r)
   outputs=[part.get("text","") for item in result.get("output",[]) for part in item.get("content",[]) if part.get("type")=="output_text"]
   answer=" ".join(outputs).strip().upper()
-  return answer=="APPROVE",answer[:100] or "reponse vide"
+  verdict=answer.split(":",1)[0].strip()
+  return verdict=="APPROVE",answer[:180] or "reponse vide"
  except urllib.error.HTTPError as e:
   detail=e.read(500).decode("utf-8","replace")
   try:detail=json.loads(detail).get("error",{}).get("message",detail)
