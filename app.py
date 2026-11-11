@@ -319,6 +319,7 @@ class Handler(BaseHTTPRequestHandler):
   elif self.path.split("?")[0]=="/api/polymarket/report":body=json.dumps(polymarket_research.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/polymarket/lag":body=json.dumps(poly_lag.report(DB)).encode();mime="application/json"
   elif self.path.split("?")[0]=="/api/copy":body=json.dumps(copy_wallet.report(DB)).encode();mime="application/json"
+  elif self.path.split("?")[0]=="/api/copy/diagnostics":body=json.dumps(copy_wallet.diagnostics()).encode();mime="application/json"
   elif self.path.split("?")[0]=="/health":body=b'{"ok":true}';mime="application/json"
   else:self.send_error(404);return
   self.send_response(200);self.send_header("Content-Type",mime);self.send_header("Cache-Control","no-store");self.send_header("Content-Length",str(len(body)));self.end_headers();self.wfile.write(body)
