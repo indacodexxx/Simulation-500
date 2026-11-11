@@ -50,10 +50,10 @@ def run(path):
   latest=max([int(e["timestamp"]) for e in valid],default=0)
   if not started:
    c.execute("UPDATE copy_health SET checked=?,events=?,latest=?,candidates=0,copied=0,reason=? WHERE id=1",(now,len(valid),latest,"First poll: historical trades excluded"))
-   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-30)))
+   c.execute("UPDATE copy_state SET cash=?,started=?,last_seen=?,error=NULL WHERE id=1",(cash,now,max(latest,now-600)))
    return {"status":"initialized","recent_public_trades":len(valid),"latest_public_trade":latest}
-  # Overlap 5 minutes to handle delayed indexing; deduplicate by stable trade key.
-  new=sorted((e for e in valid if int(e["timestamp"])>=max(started,last_seen-300) and now-int(e["timestamp"])<=600),key=lambda e:int(e["timestamp"]))
+  # Overlap 10 minutes for delayed indexing; deduplicate by stable trade key.
+  new=sorted((e for e in valid if int(e["timestamp"])>=max(started-600,last_seen-600) and now-int(e["timestamp"])<=900),key=lambda e:int(e["timestamp"]))
   copied=0
   if new:
    try:
