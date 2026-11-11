@@ -111,7 +111,7 @@ def run(path):
   print("SIM500_COPY_ERROR:",repr(exc),flush=True)
   with LOCK,sqlite3.connect(path,timeout=15) as c:
    c.execute("UPDATE copy_state SET error=? WHERE id=1",(str(exc)[:250],))
-   c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polygon follower error: "+str(exc)[:180]))
+   c.execute("UPDATE copy_health SET checked=?,reason=? WHERE id=1",(now,"Polymarket activity follower error: "+str(exc)[:180]))
   return {"error":str(exc)[:180]}
 def selftest():
  """Execute one deterministic paper BUY in a disposable database, never the live portfolio."""
@@ -157,6 +157,6 @@ def report(path):
  return {"target":TARGET,"cash_eur":round(cash,2),"cash_usd":None,"starting_capital_eur":500,"sizing_method":"Polymarket V2 wallet activity: 5% of observed fill notional, capped at 50 EUR per order; simulated spread and fee","positions":[{"asset":x[0],"market":x[1],"shares":x[2],"cost":x[3],"last_trade_price":x[4]} for x in positions],
  "trades":[{"timestamp":x[0],"market":x[1],"side":x[2],"target_price":x[3],"paper_price":x[4],"shares":x[5],"amount":x[6],"reason":x[7]} for x in trades],
  "health":{"checked_at":health[0],"public_events":health[1],"latest_public_trade":health[2],"candidates":health[3],"copied_last_poll":health[4],"reason":health[5]} if health else None,
- "last_target_trade":last_seen or None,"started":started,"error":error,"execution_enabled":False,
+ "last_target_trade":last_seen or None,"started":started,"error":error,"execution_enabled":False,"real_money_execution_enabled":False,"paper_execution_enabled":True,
  "status":"not_started" if not started else ("api_error" if error else "monitoring"),
  "warning":"Public Polymarket V2 wallet activity feed; newly observed trades only. 5% of source trade notional, not exact portfolio mirroring. FX, paper slippage and fees approximate. Render SQLite storage is ephemeral; not ready for real-money trading."}
